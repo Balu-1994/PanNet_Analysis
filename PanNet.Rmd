@@ -1,0 +1,329 @@
+---
+title: "PAnNET_Analysis"
+date: "__`r lubridate::today()`__"
+output: 
+  html_document:
+    number_sections: true
+    code_folding: hide
+    toc: true
+    toc_depth: 1
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(DESeq2)
+library(RColorBrewer)
+library(ggplot2)
+library(gplots)
+library(pheatmap)
+library(ggrepel)
+library("BiocParallel")
+library(ggpubr)
+library(factoextra)
+library("PoiClaClu")
+register(MulticoreParam(4))
+
+expression_dir = "C:/Users/br23n469/Desktop/PanNet_RNASeq_Analysis"
+
+```
+
+# Aim
+
+The main goal of this study is to analyze the data thoroughly using DESeq2 before applying PCA, heatmap, and distance matrix. We use DESeq2 to assess the subread count, as well as interactively query and explore the dataset, in an attempt to find genes that are differentially expressed. By applying PCA, distance matrix plots and K-means Clustering, the structure and interaction of the data may be further highlighted, making it simpler to identify clusters, similarities, and variations.
+
+# Analyses of Data
+
+## Loading the Data
+
+Sub-read count Data is loaded and also removed columns which are not need. This columns which were removed:
+  - Chr 
+  - Start
+  - End
+  - Strand
+  - Length
+
+```{r Loading data, echo=TRUE}
+
+# Setting up color profiles from color brewer
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+mycols = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+
+# Sample names
+sample_1 <- "T.1"
+sample_2 <- "T.2"
+sample_3 <- "T.3"
+sample_4 <- "T.4"
+
+# Create Samples Data-frame
+condition_column <- c(rep(sample_1, 8),
+                      rep(sample_2, 8),
+                      rep(sample_3, 6),
+                      rep(sample_4, 3))
+
+run_column <- paste0(condition_column,
+                     ".",
+                     c(1:8, 1:8, 1:6, 1:3))
+
+rep_column <- gsub("T.", "", run_column)
+
+samples_df <- data.frame(condition = condition_column,
+                         run = run_column,
+                         rep = rep_column, 
+                         row.names = run_column)
+
+# Convert 'condition' column to factor
+samples_df$condition = factor(samples_df$condition)
+
+# The table contains values for each CDS included in the sub_read_count_data  variable.
+sub_read_count_data <- read.table("subreadcounts.txt", header = TRUE, row.names = 1)
+
+# Remove specific columns from sub_read_count_data like 'Chr', 'Start', 'End', 'Strand' and 'Length'.
+sub_read_count_data <- sub_read_count_data[ , -c(3, 4, 1, 2,5)]
+
+# Change column names
+colnames(sub_read_count_data) <- rownames(samples_df)
+
+```
+
+## Data quality assessment 
+
+### Differentially expressed genes with DESeq2
+
+The geometric mean of all genes was determined inside DESeq2 to achieve an internal normalization. This average is then used to normalize gene counts across samples[2].
+
+The DESeq2 package requires count data in the form of an integer matrix, such as that collected from an RNA-seq, as its input. DESeq2 eliminates outliers using Cook's distance. It also eliminates genes whose normalized mean counts are below a threshold. Removing low-count genes enhances detection power by reducing repeated p-value adjustments[1][2].
+
+<!-- At this point we do not need to run DESeq yet (saves computation time) --> 
+
+```{r set up DESeq, include = T, echo=TRUE}
+
+# Import as DESeqDataSet(dds)
+if (!exists("dds")){
+  dds <- DESeqDataSetFromMatrix(countData = sub_read_count_data,
+                                colData = samples_df,
+                                design = ~ 1)
+  # 
+  
+  # Pre-filtering
+  keep <- rowSums(counts(dds)) >= 10
+  dds <- dds[keep, ]
+}
+
+# Differential expression analysis
+# dds <- DESeq(dds)
+
+```
+
+* This creates a DESeqDataSet object from count data and sample metadata.
+* It performs pre-filtering by retaining only the genes with a count greater than or equal to 10.
+* After filtering `r sum(keep)` genes remaining.
+
+### Normalizing Data
+
+* Any data analysis must include the stages of data quality assessment and quality control.
+* Here we have used the 'vst' transformation functions which works must faster when compared to 'rlog' function.
+
+```{r normalizing data, echo=TRUE}
+
+# Log transformation for data quality assessment
+
+vsd <- vst(dds, blind = FALSE)
+
+```
+
+### PCA Plot
+
+* Data - vst-normalized (`DESeq`) counts.
+* No scaling was done to data.
+
+```{r PCA,  fig.height = 4, fig.width = 5, echo=TRUE}
+
+# PCA Plot
+plotPCAFunction <- function(norm_data){
+  pcaData <- plotPCA(norm_data, intgroup = c("condition", "rep"), returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+ggplot(pcaData, aes(PC1, PC2, color = condition, shape = condition)) + geom_point(size = 3) + 
+  geom_text_repel(aes(label = rep), size = 3, color = "black") +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme_classic()
+}
+
+plotPCAFunction(vsd)
+
+```
+
+### Heatmap of sample-to-sample distances
+
+* Data - vst-normalized (`DESeq`) counts.
+* Number of cluster - 2
+* Euclidean distance between samples were calculated.
+* Hierarchical Clustering on the distance matrix was done the ward.D2 method
+
+```{r Heatmap of sample-to-sample distances, fig.height = 6, fig.width = 8, echo=TRUE}
+
+plotHmapDistance <- function(norm_data, n_clust) {
+  
+  # Calculate the distance matrix between samples
+  sampleDists <- dist(t(assay(norm_data)))
+
+  # Perform hierarchical clustering on the distance matrix using the ward.D2 method
+  sampleGroups <- cutree(hclust(sampleDists, method = "ward.D2"), n_clust)
+
+  # Create an annotation data frame with cluster assignments
+  anno_df <- data.frame(clust = as.character(sampleGroups), row.names = colnames(dds))
+
+  # Generate the heatmap plot using pheatmap
+  pheatmap(as.matrix(sampleDists),
+           col = colorpanel(100, "#2b8cbe", "#7bccc4", "white"),
+           clustering_distance_rows = sampleDists,
+           clustering_distance_cols = sampleDists,
+           clustering_method = "ward.D2",
+           annotation_col = anno_df,
+           main = "Heatmap using the variance stabilizing transformed values.")
+}
+
+plotHmapDistance(vsd, 2)
+```
+### Heatmap of sample-to-sample distances using Poisson Distance
+
+* Data - DESeq data count.
+* Number of cluster - 2
+* Poisson distance between samples were calculated.
+* Hierarchical Clustering on the distance matrix was done the ward.D2 method
+
+```{r Heatmap of sample-to-sample distances using Poisson Distance, fig.height = 6, fig.width = 8, echo=TRUE}
+
+plotHmapPoissonDistance <- function(data, n_clust) {
+  
+  # Calculate the distance matrix between samples using Poisson Distance
+  samplePoisDist <- PoissonDistance(t(counts(dds)))
+  # Convert the distance matrix to a matrix format
+  samplePoisDistMatrix <- as.matrix(samplePoisDist$dd)  
+  
+  # Set row and column names of the matrix as column names of 'dds'
+  rownames(samplePoisDistMatrix) <- paste(colnames(dds))  
+  colnames(samplePoisDistMatrix) <- paste(colnames(dds))
+
+
+  # Perform hierarchical clustering on the distance matrix using the ward.D2 method
+  sampleGroups <- cutree(hclust(samplePoisDist$dd, method = "ward.D2"), 2)
+
+  # Create an annotation data frame with cluster assignments
+  anno_df <- data.frame(clust = as.character(sampleGroups), row.names = colnames(dds))
+
+  # Generate the heatmap plot using pheatmap
+  pheatmap(samplePoisDistMatrix,
+         clustering_distance_rows = samplePoisDist$dd,
+         clustering_distance_cols = samplePoisDist$dd,
+         col = colorpanel(100, "#2b8cbe", "#7bccc4", "white"),
+         annotation_col = anno_df,
+         main = "Heatmap of sample-to-sample distances using the Poisson Distance.")
+}
+
+plotHmapPoissonDistance(dds, 2)
+```
+
+### Heatmap of sample-to-sample Correlation
+
+* Data - vst-normalized (`DESeq`) counts.
+* Number of cluster - 2
+* Correlation between samples were calculated.
+* Hierarchical Clustering on the distance matrix was done the ward.D2 method
+
+```{r Heatmap of sample-to-sample Correlation, fig.height = 6, fig.width = 8, echo=TRUE}
+
+plotHmapCorrelation <- function (norm_data, n_clust){
+  
+  # Calculate the correlation matrix of the variance stabilizing transformed data
+  sampleCor <- cor(assay(norm_data))
+  
+  # Perform hierarchical clustering on the correlation matrix
+  sampleGroups <- cutree(hclust(as.dist(1 - sampleCor), method = "ward.D2"), n_clust)  
+
+  # Create an annotation data frame with cluster assignments
+  anno_df <- data.frame(clust = as.character(sampleGroups), row.names = colnames(dds))  
+
+  # Generate the heatmap plot using pheatmap
+  pheatmap(as.matrix(sampleCor), 
+          col = colorpanel(100, "#2b8cbe", "#7bccc4", "white"),
+          clustering_distance_rows = as.dist(1 - sampleCor),  
+          clustering_distance_cols = as.dist(1 - sampleCor),  
+          clustering_method = "ward.D2",  
+          annotation_col = anno_df,
+          main = "Heatmap of sample-to-sample Correlation") 
+
+}
+
+plotHmapCorrelation(vsd, 2)
+
+```
+
+
+### K-means Plot
+
+* Data - DESeq data count.
+* Number of cluster - 2
+
+
+```{r K-Means,  fig.height = 6, fig.width = 8, echo=TRUE}
+
+plotKmeans <- function(data, n_clust, s_point) {
+  
+  # Compute k-means
+  set.seed(123)
+  res.km <- kmeans(scale(t(counts(data))), n_clust, nstart = s_point)
+  
+  # Dimension reduction using PCA
+  res.pca <- prcomp(t(counts(data)),  scale = TRUE)
+  
+  # Coordinates of individuals
+  ind.coord <- as.data.frame(get_pca_ind(res.pca)$coord)
+  
+  # Add clusters obtained using the K-means algorithm
+  ind.coord$cluster <- factor(res.km$cluster)
+  
+  # Add condition and row.names from the metadata
+  ind.coord$condition <- data$condition
+  ind.coord$row.names <- colnames(data)
+  
+  # Percentage of variance explained by dimensions
+  eigenvalue <- round(get_eigenvalue(res.pca), 1)
+  variance.percent <- eigenvalue$variance.percent
+  
+  # Generate the K-means plot using ggscatter
+  ggscatter(
+    ind.coord, x = "Dim.1", y = "Dim.2", 
+    color = "cluster", palette = "npg", ellipse = TRUE, ellipse.type = "convex",
+    shape = "condition",
+    size = 3,  legend = "right", ggtheme = theme_bw(),
+    xlab = paste0("Dim 1 (", variance.percent[1], "% )" ),
+    ylab = paste0("Dim 2 (", variance.percent[2], "% )" ),
+    label = "row.names", repel=TRUE, font.label = c(9, "plain","black"),
+    title = 'K-means Clustering '
+  )
+  
+}
+
+# Compute k-means with k = 2 and starting point = 20
+
+plotKmeans(dds, 2, 20)
+
+```
+
+# Summary
+
+```{r session info}
+sessionInfo()
+```
+# Reference
+
+1. https://chipster.csc.fi/manual/deseq2.html. n.d. https://chipster.csc.fi/manual/deseq2.html
+
+2. Love, Simon Anders, and Wolfgang Huber, M. I. 2022, November 23. Analyzing RNA-seq data with DESeq2. Analyzing RNA-seq data with DESeq2. https://www.bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#howto-get-help-for-deseq2.
+
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
