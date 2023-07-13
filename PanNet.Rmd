@@ -103,7 +103,6 @@ if (!exists("dds")){
   dds <- DESeqDataSetFromMatrix(countData = sub_read_count_data,
                                 colData = samples_df,
                                 design = ~ 1)
-  # 
   
   # Pre-filtering
   keep <- rowSums(counts(dds)) >= 10
@@ -126,7 +125,7 @@ if (!exists("dds")){
 
 ```{r normalizing data, echo=TRUE}
 
-# Log transformation for data quality assessment
+# Variance stabilizing transformation for data quality assessment
 
 vsd <- vst(dds, blind = FALSE)
 
@@ -140,8 +139,7 @@ vsd <- vst(dds, blind = FALSE)
 ```{r PCA,  fig.height = 4, fig.width = 5, echo=TRUE}
 
 # PCA Plot
-plotPCAFunction <- function(norm_data){
-  pcaData <- plotPCA(norm_data, intgroup = c("condition", "rep"), returnData = TRUE)
+pcaData <- plotPCA(vsd, intgroup = c("condition", "rep"), returnData = TRUE)
 percentVar <- round(100 * attr(pcaData, "percentVar"))
 
 ggplot(pcaData, aes(PC1, PC2, color = condition, shape = condition)) + geom_point(size = 3) + 
@@ -149,9 +147,79 @@ ggplot(pcaData, aes(PC1, PC2, color = condition, shape = condition)) + geom_poin
   xlab(paste0("PC1: ",percentVar[1],"% variance")) +
   ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
   theme_classic()
+
+```
+
+### K-means Plot
+
+* Data - vst-normalized (`DESeq`) counts.
+* Number of cluster - 2
+
+```{r K-Means,  fig.height = 6, fig.width = 8, echo=TRUE}
+
+  # Compute k-means
+  set.seed(123)
+  res.km <- kmeans(scale(t(assay(vsd))), 2, nstart = 20)
+
+plotKmeans <- function(norm_data) {
+  
+
+  
+  # Dimension reduction using PCA
+  res.pca <- prcomp(t(assay(norm_data)),  scale = TRUE)
+  
+  # Coordinates of individuals
+  ind.coord <- as.data.frame(get_pca_ind(res.pca)$coord)
+  
+  # Add clusters obtained using the K-means algorithm
+  ind.coord$cluster <- factor(res.km$cluster)
+  
+  # Add condition and row.names from the metadata
+  ind.coord$condition <- norm_data$condition
+  ind.coord$row.names <- colnames(norm_data)
+  
+  # Percentage of variance explained by dimensions
+  eigenvalue <- round(get_eigenvalue(res.pca), 1)
+  variance.percent <- eigenvalue$variance.percent
+  
+  # Generate the K-means plot using ggscatter
+  ggscatter(
+    ind.coord, x = "Dim.1", y = "Dim.2", 
+    color = "cluster", palette = "npg", ellipse = TRUE, ellipse.type = "convex",
+    shape = "condition",
+    size = 3,  legend = "right", ggtheme = theme_bw(),
+    xlab = paste0("Dim 1 (", variance.percent[1], "% )" ),
+    ylab = paste0("Dim 2 (", variance.percent[2], "% )" ),
+    label = "row.names", repel=TRUE, font.label = c(9, "plain","black"),
+    title = 'K-means Clustering '
+  )
+  
 }
 
-plotPCAFunction(vsd)
+# Compute k-means with k = 2 and starting point = 20
+plotKmeans(vsd)
+
+```
+
+### PCA Plot with Kmeans Cluster
+
+* Number of cluster - 2
+
+```{r PCA with K-means,  fig.height = 4, fig.width = 5, echo=TRUE}
+
+# PCA Plot
+
+# Add clusters obtained using the K-means algorithm to pcaData
+pcaData$KmeanCluster <- factor(res.km$cluster)
+
+
+
+ggplot(pcaData, aes(PC1, PC2, color = KmeanCluster, shape = condition)) + geom_point(size = 3) + 
+  geom_text_repel(aes(label = rep), size = 3, color = "black") +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme_classic()
+
 
 ```
 
@@ -187,6 +255,7 @@ plotHmapDistance <- function(norm_data, n_clust) {
 
 plotHmapDistance(vsd, 2)
 ```
+
 ### Heatmap of sample-to-sample distances using Poisson Distance
 
 * Data - DESeq data count.
@@ -261,63 +330,12 @@ plotHmapCorrelation(vsd, 2)
 
 ```
 
-
-### K-means Plot
-
-* Data - DESeq data count.
-* Number of cluster - 2
-
-
-```{r K-Means,  fig.height = 6, fig.width = 8, echo=TRUE}
-
-plotKmeans <- function(data, n_clust, s_point) {
-  
-  # Compute k-means
-  set.seed(123)
-  res.km <- kmeans(scale(t(counts(data))), n_clust, nstart = s_point)
-  
-  # Dimension reduction using PCA
-  res.pca <- prcomp(t(counts(data)),  scale = TRUE)
-  
-  # Coordinates of individuals
-  ind.coord <- as.data.frame(get_pca_ind(res.pca)$coord)
-  
-  # Add clusters obtained using the K-means algorithm
-  ind.coord$cluster <- factor(res.km$cluster)
-  
-  # Add condition and row.names from the metadata
-  ind.coord$condition <- data$condition
-  ind.coord$row.names <- colnames(data)
-  
-  # Percentage of variance explained by dimensions
-  eigenvalue <- round(get_eigenvalue(res.pca), 1)
-  variance.percent <- eigenvalue$variance.percent
-  
-  # Generate the K-means plot using ggscatter
-  ggscatter(
-    ind.coord, x = "Dim.1", y = "Dim.2", 
-    color = "cluster", palette = "npg", ellipse = TRUE, ellipse.type = "convex",
-    shape = "condition",
-    size = 3,  legend = "right", ggtheme = theme_bw(),
-    xlab = paste0("Dim 1 (", variance.percent[1], "% )" ),
-    ylab = paste0("Dim 2 (", variance.percent[2], "% )" ),
-    label = "row.names", repel=TRUE, font.label = c(9, "plain","black"),
-    title = 'K-means Clustering '
-  )
-  
-}
-
-# Compute k-means with k = 2 and starting point = 20
-
-plotKmeans(dds, 2, 20)
-
-```
-
 # Summary
 
 ```{r session info}
 sessionInfo()
 ```
+
 # Reference
 
 1. https://chipster.csc.fi/manual/deseq2.html. n.d. https://chipster.csc.fi/manual/deseq2.html
