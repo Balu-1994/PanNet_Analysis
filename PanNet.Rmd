@@ -135,15 +135,19 @@ vsd <- vst(dds, blind = FALSE)
 
 * Data - vst-normalized (`DESeq`) counts.
 * No scaling was done to data.
+* Top 500 most variable genes were taken from a list of 36010 genes.
 
 ```{r PCA,  fig.height = 4, fig.width = 5, echo=TRUE}
 
-# PCA Plot
+# Perform PCA on the `vsd` data with grouping by "condition" and "rep".
 pcaData <- plotPCA(vsd, intgroup = c("condition", "rep"), returnData = TRUE)
+
+# Retrieve the percentage of variance explained by each principal component
 percentVar <- round(100 * attr(pcaData, "percentVar"))
 
+# Create a scatter plot of PC1 vs PC2
 ggplot(pcaData, aes(PC1, PC2, color = condition, shape = condition)) + geom_point(size = 3) + 
-  geom_text_repel(aes(label = rep), size = 3, color = "black") +
+  geom_text_repel(aes(label = name), size = 3, color = "black") +
   xlab(paste0("PC1: ",percentVar[1],"% variance")) +
   ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
   theme_classic()
@@ -154,19 +158,31 @@ ggplot(pcaData, aes(PC1, PC2, color = condition, shape = condition)) + geom_poin
 
 * Data - vst-normalized (`DESeq`) counts.
 * Number of cluster - 2
+* Top 500 most variable genes.
+No scaling was done to data.
 
-```{r K-Means,  fig.height = 6, fig.width = 8, echo=TRUE}
+```{r K-Means,  fig.height = 4, fig.width = 5, echo=TRUE}
 
-  # Compute k-means
-  set.seed(123)
-  res.km <- kmeans(scale(t(assay(vsd))), 2, nstart = 20)
+# Compute k-means
+set.seed(123)
+         
+# Calculate the row variances of the `vsd` object
+rv <- rowVars(assay(vsd))
 
-plotKmeans <- function(norm_data) {
-  
+# Select the top 500 rows with the highest variances.
+select <- order(rv, decreasing = TRUE)[seq_len(min(500, length(rv)))]
 
+# Subset the `vsd` object to include only the selected rows and transpose the result
+subset_vsd <- vsd[select, ]
+
+# Perform k-means clustering on the transposed subset of the `vsd` matrix
+res.km <- kmeans(t(assay(subset_vsd)), 2, nstart = 20)
+
+# ploting k-means
+plotKmeans <- function(data) {
   
   # Dimension reduction using PCA
-  res.pca <- prcomp(t(assay(norm_data)),  scale = TRUE)
+  res.pca <- prcomp(t(assay(data)))
   
   # Coordinates of individuals
   ind.coord <- as.data.frame(get_pca_ind(res.pca)$coord)
@@ -175,8 +191,9 @@ plotKmeans <- function(norm_data) {
   ind.coord$cluster <- factor(res.km$cluster)
   
   # Add condition and row.names from the metadata
-  ind.coord$condition <- norm_data$condition
-  ind.coord$row.names <- colnames(norm_data)
+  ind.coord$condition <- data$condition
+  ind.coord$row.names <- colnames(data)
+  
   
   # Percentage of variance explained by dimensions
   eigenvalue <- round(get_eigenvalue(res.pca), 1)
@@ -196,14 +213,14 @@ plotKmeans <- function(norm_data) {
   
 }
 
-# Compute k-means with k = 2 and starting point = 20
-plotKmeans(vsd)
+plotKmeans(subset_vsd)
 
 ```
 
 ### PCA Plot with Kmeans Cluster
 
 * Number of cluster - 2
+* Top 500 most variable genes.
 
 ```{r PCA with K-means,  fig.height = 4, fig.width = 5, echo=TRUE}
 
@@ -212,14 +229,12 @@ plotKmeans(vsd)
 # Add clusters obtained using the K-means algorithm to pcaData
 pcaData$KmeanCluster <- factor(res.km$cluster)
 
-
-
+# Create a scatter plot of PC1 vs PC2
 ggplot(pcaData, aes(PC1, PC2, color = KmeanCluster, shape = condition)) + geom_point(size = 3) + 
   geom_text_repel(aes(label = rep), size = 3, color = "black") +
   xlab(paste0("PC1: ",percentVar[1],"% variance")) +
   ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
   theme_classic()
-
 
 ```
 
