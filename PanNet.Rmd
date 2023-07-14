@@ -22,6 +22,13 @@ library("BiocParallel")
 library(ggpubr)
 library(factoextra)
 library("PoiClaClu")
+library(ggrepel)
+library(cowplot)
+library(readxl)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(stringr)
 register(MulticoreParam(4))
 
 expression_dir = "C:/Users/br23n469/Desktop/PanNet_RNASeq_Analysis"
@@ -36,12 +43,12 @@ The main goal of this study is to analyze the data thoroughly using DESeq2 befor
 
 ## Loading the Data
 
-Sub-read count Data is loaded and also removed columns which are not need. This columns which were removed:
-  - Chr 
-  - Start
-  - End
-  - Strand
-  - Length
+* Sub-read count Data is loaded and also removed columns which are not need. This columns which were removed:
+  + Chr 
+  + Start 
+  + End 
+  + Strand 
+  + Length
 
 ```{r Loading data, echo=TRUE}
 
@@ -86,6 +93,108 @@ colnames(sub_read_count_data) <- rownames(samples_df)
 
 ```
 
+* Adding 'Tissue for co_extraction_DESI_DNA_RNA_rep' data. 
+* First 25 rows were extracted.
+* Columns of interest includes: 
+  + Date of isolation
+  + Id
+  + B-Nr_Original
+  + B-Nr.
+  + RQN from Vetsuisse
+  + Vetsuisse results after their Qubit
+
+```{r processing co_extraction DESI DNA RNA data, echo=TRUE}
+
+# Read the DESI_DNA_RNA_rep Excel file, sheet name = Total RNA extraction.
+desiDNARNARep <- suppressMessages(read_excel("meta_data/20020505_Tissue for co_extraction_DESI_DNA_RNA_rep.update_23.9.22.xlsx", sheet = "Total RNA extraction", 
+                                             .name_repair = "unique"))
+
+# Specify the column names you want to extract
+vectorNameColumns <- c("Date of isolation", "...3", "B-Nr_Original", "B-Nr.", "RQN from Vetsuisse", 
+                       "Vetsuisse results after their Qubit")
+
+# Specify the row range you want to extract
+vectorNameRows <- 1:25
+
+# Extract the desired rows and columns from the Excel data and convert it to a data frame
+df.desiDNARNARep <- as.data.frame(desiDNARNARep[vectorNameRows, vectorNameColumns])
+
+# Rename the column '...3' to 'Id'
+colnames(df.desiDNARNARep)[colnames(df.desiDNARNARep) == "...3"] <- "Id"
+
+# Function to replace data starting with dot R. with an empty value
+replace_R_with_empty <- function(data) {
+  data <- lapply(data, function(col) {
+    gsub("^R.", "", col) # Replace data starting with R. with an empyty value
+  })
+}
+
+df.desiDNARNARep$Id <- (replace_R_with_empty(df.desiDNARNARep$Id))
+
+# Convert data types of the dataframe
+df.desiDNARNARep <- type.convert(df.desiDNARNARep, as.is = TRUE)
+
+# Apply the 'str_trim' function to remove leading and trailing whitespace from all columns of 'df.desiDNARNARep'
+df.desiDNARNARep <- df.desiDNARNARep %>%
+  mutate_all(str_trim)
+
+```
+
+* Adding 'samples for DESI and RNA extraction' data. 
+* First 31 rows were extracted.
+* Columns of interest includes: 
+  + B-Nr.
+  + Archivia
+  + Geschlecht
+  + Organ
+  + Reubi /TBBCollection
+  + WHO 2017
+  + WHO 2017 code
+  + CA9 Primärtumoren
+  + MCT1_TMA
+  + MCT4_TMA
+  + MCT4 (new scoring)
+  + DESI
+  
+```{r sample DESI and RNA extraction data, echo=TRUE}
+
+# Read the samples for DESI and RNA extraction Excel file.
+sampleDNARNAExtra <- suppressMessages(read_excel("meta_data/samples for DESI and RNA extraction.xlsx", 
+                            sheet = "Sheet2", .name_repair = "unique"))
+
+# Specify the column names you want to extract
+vectorNameColumns2 <- c("B-Nr.", "Archivia", "Geschlecht", "Organ",  "Reubi /TBBCollection", 
+                       "WHO 2017", "WHO 2017 code", "CA9 Primärtumoren", 
+                       "MCT1_TMA", "MCT4_TMA", "MCT4 (new scoring)", "DESI")
+
+# Specify the row range you want to extract
+vectorNameRows2 <- 1:31
+
+# Extract the desired rows and columns from the Excel data and convert it to a data frame
+df.sampleDNARNAExtra <- as.data.frame(sampleDNARNAExtra[vectorNameRows2, vectorNameColumns2])
+
+# Convert data types of the dataframe
+df.sampleDNARNAExtra <- type.convert(df.sampleDNARNAExtra, as.is = TRUE)
+
+# Apply the 'str_trim' function to remove leading and trailing whitespace 
+# from all columns of 'df.sampleDNARNAExtra'
+df.sampleDNARNAExtra <- df.sampleDNARNAExtra %>%
+  mutate_all(str_trim)
+
+``` 
+
+* Left joining on the two data frames using the "B-Nr." column.
+
+```{r Joining co_extraction and sample data, echo=TRUE}
+
+# Perform a left join on the two data frames using the "B-Nr." column.
+df.desiDNARNASample <- left_join(df.desiDNARNARep, df.sampleDNARNAExtra, by="B-Nr.")
+
+# Add a new "name" by appending "T." to the existing "Id" column.
+df.desiDNARNASample$name <- paste0("T.", df.desiDNARNASample$Id)
+
+```
+
 ## Data quality assessment 
 
 ### Differentially expressed genes with DESeq2
@@ -126,40 +235,16 @@ if (!exists("dds")){
 ```{r normalizing data, echo=TRUE}
 
 # Variance stabilizing transformation for data quality assessment
-
 vsd <- vst(dds, blind = FALSE)
 
 ```
 
-### PCA Plot
-
-* Data - vst-normalized (`DESeq`) counts.
-* No scaling was done to data.
-* Top 500 most variable genes were taken from a list of 36010 genes.
-
-```{r PCA,  fig.height = 4, fig.width = 5, echo=TRUE}
-
-# Perform PCA on the `vsd` data with grouping by "condition" and "rep".
-pcaData <- plotPCA(vsd, intgroup = c("condition", "rep"), returnData = TRUE)
-
-# Retrieve the percentage of variance explained by each principal component
-percentVar <- round(100 * attr(pcaData, "percentVar"))
-
-# Create a scatter plot of PC1 vs PC2
-ggplot(pcaData, aes(PC1, PC2, color = condition, shape = condition)) + geom_point(size = 3) + 
-  geom_text_repel(aes(label = name), size = 3, color = "black") +
-  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
-  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
-  theme_classic()
-
-```
-
-### K-means Plot
+### K-means
 
 * Data - vst-normalized (`DESeq`) counts.
 * Number of cluster - 2
 * Top 500 most variable genes.
-No scaling was done to data.
+# No scaling was done to data.
 
 ```{r K-Means,  fig.height = 4, fig.width = 5, echo=TRUE}
 
@@ -213,30 +298,115 @@ plotKmeans <- function(data) {
   
 }
 
-plotKmeans(subset_vsd)
-
 ```
+### PCA Plots
 
-### PCA Plot with Kmeans Cluster
+* Data - vst-normalized (`DESeq`) counts.
+* No scaling was done to data.
+* Top 500 most variable genes were taken from a list of 36010 genes.
 
-* Number of cluster - 2
-* Top 500 most variable genes.
+```{r pcaPlot,  fig.height = 3.25, fig.width = 8, echo=TRUE}
 
-```{r PCA with K-means,  fig.height = 4, fig.width = 5, echo=TRUE}
+# Perform PCA on the `vsd` data with grouping by "condition" and "rep".
+pcaData <- plotPCA(vsd, intgroup = c("condition", "rep"), returnData = TRUE)
 
-# PCA Plot
+# Retrieve the percentage of variance explained by each principal component
+percentVar <- round(100 * attr(pcaData, "percentVar"))
 
-# Add clusters obtained using the K-means algorithm to pcaData
-pcaData$KmeanCluster <- factor(res.km$cluster)
-
-# Create a scatter plot of PC1 vs PC2
-ggplot(pcaData, aes(PC1, PC2, color = KmeanCluster, shape = condition)) + geom_point(size = 3) + 
-  geom_text_repel(aes(label = rep), size = 3, color = "black") +
+pcaPlot <- ggplot(pcaData, aes(PC1, PC2, color = condition, shape = condition)) + 
+  geom_point(size = 3) + geom_text_repel(aes(label = name), size = 3, color = "black") +
   xlab(paste0("PC1: ",percentVar[1],"% variance")) +
   ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
   theme_classic()
+ 
+# Add clusters obtained using the K-means algorithm to pcaData
+pcaData$KmeanCluster <- factor(res.km$cluster)
+ 
+# Create a scatter plot of PC1 vs PC2
+kmeansPCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = KmeanCluster, shape = condition)) + geom_point(size = 3) + 
+  geom_text_repel(aes(label = name), size = 3, color = "black") +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme_classic()
+ 
+
+# Creating PCA plots
+plot_grid(pcaPlot, kmeansPCAPlot, ncol=2)
 
 ```
+### PCA Plots with sample Data
+
+```{r left join pcaData with df.desiDNARNASample,  fig.height = 3.25, fig.width = 8, echo=TRUE}
+
+# Perform a left join on the two data frames using the "B-Nr." column.
+pcaData <- left_join(pcaData, df.desiDNARNASample, by="name")
+
+```
+
+```{r pcaPlots with sample data,  fig.height = 6, fig.width = 8, echo=TRUE}
+ 
+names(pcaData) <- gsub(" ", "_", names(pcaData))
+ 
+# Create a scatter plot of PC1 vs PC2
+coollectionPCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = pcaData$`Reubi_/TBBCollection`)) + geom_point(size = 3) + 
+  geom_text_repel(aes(label = pcaData$rep), size = 3, color = "black") +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme_classic() + labs(color = "Collection")
+
+RQNPCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = pcaData$Geschlecht)) + geom_point(size = 3) + 
+  geom_text_repel(aes(label = pcaData$rep), size = 3, color = "black") +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme_classic() + labs(color = "Gender")
+
+whoPCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = pcaData$WHO_2017)) + geom_point(size = 3) + 
+  geom_text_repel(aes(label = pcaData$rep), size = 3, color = "black") +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme_classic() + labs(color = "WHO 2017")
+
+ca9PCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = pcaData$CA9_Primärtumoren)) + geom_point(size = 3) + 
+  geom_text_repel(aes(label = pcaData$rep), size = 3, color = "black") +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme_classic() + labs(color = "CA9 Primary tumor")
+ 
+
+# Creating PCA plots
+plot_grid(coollectionPCAPlot, RQNPCAPlot,whoPCAPlot,ca9PCAPlot, ncol=2, nrow=2)
+
+```
+```{r pcaPlots with mct,  fig.height = 6, fig.width = 8, echo=TRUE}
+ 
+
+ 
+# Create a scatter plot of PC1 vs PC2
+MCT1PCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = pcaData$MCT1_TMA)) + geom_point(size = 3) + 
+  geom_text_repel(aes(label = pcaData$rep), size = 3, color = "black") +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme_classic() + labs(color = "MCT1 TMA")
+
+MCT2PCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = pcaData$MCT4_TMA)) + geom_point(size = 3) + 
+  geom_text_repel(aes(label = pcaData$rep), size = 3, color = "black") +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme_classic() + labs(color = "MCT4 TMA")
+
+MCT2NewPCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = pcaData$`MCT4_(new_scoring)`)) + geom_point(size = 3) + 
+  geom_text_repel(aes(label = pcaData$rep), size = 3, color = "black") +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme_classic() + labs(color = "WMCT4 (new_scoring)")
+
+ 
+
+# Creating PCA plots
+plot_grid(MCT1PCAPlot, MCT2PCAPlot,MCT2NewPCAPlot,  ncol=2,  nrow=2)
+
+```
+
 
 ### Heatmap of sample-to-sample distances
 
