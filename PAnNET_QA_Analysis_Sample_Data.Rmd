@@ -1,5 +1,5 @@
 ---
-title: "PAnNET_Analysis"
+title: "PAnNET_QA_Analysis_Sample_Data"
 date: "__`r lubridate::today()`__"
 output: 
   html_document:
@@ -150,7 +150,7 @@ df.desiDNARNARep <- df.desiDNARNARep %>%
   + Reubi /TBBCollection
   + WHO 2017
   + WHO 2017 code
-  + CA9 Primärtumoren
+  + CA9 primary tumors
   + MCT1_TMA
   + MCT4_TMA
   + MCT4 (new scoring)
@@ -180,6 +180,7 @@ df.sampleDNARNAExtra <- type.convert(df.sampleDNARNAExtra, as.is = TRUE)
 # from all columns of 'df.sampleDNARNAExtra'
 df.sampleDNARNAExtra <- df.sampleDNARNAExtra %>%
   mutate_all(str_trim)
+df.sampleDNARNAExtra$Geschlecht <- ifelse(df.sampleDNARNAExtra$Geschlecht == "m", "male", ifelse(df.sampleDNARNAExtra$Geschlecht == "f", "female", "female"))
 
 ``` 
 
@@ -299,6 +300,8 @@ plotKmeans <- function(data) {
 }
 
 ```
+
+
 ### PCA Plots
 
 * Data - vst-normalized (`DESeq`) counts.
@@ -334,6 +337,7 @@ kmeansPCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = KmeanCluster, shape = con
 plot_grid(pcaPlot, kmeansPCAPlot, ncol=2)
 
 ```
+
 ### PCA Plots with sample Data
 
 ```{r left join pcaData with df.desiDNARNASample,  fig.height = 3.25, fig.width = 8, echo=TRUE}
@@ -342,6 +346,7 @@ plot_grid(pcaPlot, kmeansPCAPlot, ncol=2)
 pcaData <- left_join(pcaData, df.desiDNARNASample, by="name")
 
 ```
+
 
 ```{r pcaPlots with sample data,  fig.height = 6, fig.width = 8, echo=TRUE}
  
@@ -370,13 +375,14 @@ ca9PCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = pcaData$CA9_Primärtumoren))
   geom_text_repel(aes(label = pcaData$rep), size = 3, color = "black") +
   xlab(paste0("PC1: ",percentVar[1],"% variance")) +
   ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
-  theme_classic() + labs(color = "CA9 Primary tumor")
+  theme_classic() + labs(color = "CA9\nprimary\ntumors ")
  
 
 # Creating PCA plots
-plot_grid(coollectionPCAPlot, RQNPCAPlot,whoPCAPlot,ca9PCAPlot, ncol=2, nrow=2)
+plot_grid(coollectionPCAPlot, RQNPCAPlot,whoPCAPlot,ca9PCAPlot, ncol=2, nrow=2, align="h")
 
 ```
+
 ```{r pcaPlots with mct,  fig.height = 6, fig.width = 8, echo=TRUE}
  
 
@@ -398,15 +404,27 @@ MCT2NewPCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = pcaData$`MCT4_(new_scori
   geom_text_repel(aes(label = pcaData$rep), size = 3, color = "black") +
   xlab(paste0("PC1: ",percentVar[1],"% variance")) +
   ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
-  theme_classic() + labs(color = "WMCT4 (new_scoring)")
+  theme_classic() + labs(color = "MCT4\n(new_score)")
+
+pcaData$RQN_from_Vetsuisse <- as.numeric(pcaData$RQN_from_Vetsuisse)
+
+RQNPCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = RQN_from_Vetsuisse)) + geom_point(size = 3) + 
+  geom_text_repel(aes(label = pcaData$rep), size = 3, color = "black") +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme_classic() + labs(color = "RQN from\nVetsuisse")
 
  
 
 # Creating PCA plots
-plot_grid(MCT1PCAPlot, MCT2PCAPlot,MCT2NewPCAPlot,  ncol=2,  nrow=2)
+plot_grid(MCT1PCAPlot, MCT2PCAPlot,MCT2NewPCAPlot, RQNPCAPlot, ncol=2,  nrow=2, 
+          align="h")
 
 ```
 
+* We do not observe any cluster formation when samples were collected from two different collection points.
+* Out of the 25 samples taken, `r sum(pcaData$Geschlecht == "male")` were male, and `r sum(pcaData$Geschlecht == "female")` were female. While we observe that more males are clustered together on the left side of the PCA plot, we cannot be certain if    it forms two separate clusters due to the sample size.
+* Out of the 25 samples taken, `r sum(pcaData$WHO_2017 == "NET G1")` were classified as Grade 1 (low-grade tumor), which indicates that these cells divide at a low rate and therefore grow slowly. Additionally, `r sum(pcaData$WHO_2017 == "NET G2")` samples were classified as Grade 2 (intermediate-grade tumor), implying that these cells divide at an intermediate rate.
 
 ### Heatmap of sample-to-sample distances
 
