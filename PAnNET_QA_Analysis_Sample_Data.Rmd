@@ -31,7 +31,7 @@ library(tidyr)
 library(stringr)
 register(MulticoreParam(4))
 
-expression_dir = "C:/Users/br23n469/Desktop/PanNet_RNASeq_Analysis"
+expression_dir = "/Users/balu/Desktop/PanNet_Analysis"
 
 ```
 
@@ -197,6 +197,150 @@ df.desiDNARNASample$name <- paste0("T.", df.desiDNARNASample$Id)
 ```
 
 ## Data quality assessment 
+
+```{r MetaData, echo=TRUE}
+
+# metaData
+sampleMetaData <- df.desiDNARNASample
+
+```
+
+```{r init reads}
+# The number of reads is determined using the fastqc output and added to the metadata
+init_reads = read.csv("processed_data/QC/init_fastqc_221027.csv", 
+                      header = T, 
+                      strip.white = T, 
+                      stringsAsFactors = F)
+
+init_reads = init_reads %>% 
+  mutate(name = gsub("_L[0-9].*", "", sample),
+         Sample_UID = paste0(name, "-", run)) %>% 
+  filter(grepl("R1.*fastq.gz", sample)) %>% 
+  group_by(Sample_UID, name) %>% 
+  summarise(raw_reads = sum(reads), .groups="drop_last") %>% 
+  mutate(name = gsub("_", ".", name))
+  
+sampleMetaData = left_join(sampleMetaData, init_reads, by = "name",
+                           suffix = c(".old", "")) %>%
+  dplyr::select(!ends_with("old"))
+
+
+```
+
+```{r trim reads}
+# The reads are processed through read trimming This data is read from the cutadapt logs and saved in a summary file
+# For each sequencing run cutadapt is executed separately and the summary is stored in the respective run folder
+
+cutadapt_files = list.files("processed_data", pattern = "cutadapt.*summary", recursive = T)
+
+
+trim_reads = lapply(cutadapt_files, 
+                    function(x) read.csv(file.path("processed_data", x)))
+
+names(trim_reads) = str_extract(cutadapt_files, 
+                                pattern = "A[^/]*_[0-9]+")
+
+trim_reads = bind_rows(trim_reads, 
+                       .id = "run")
+
+trim_reads = trim_reads %>% 
+  mutate(name = gsub("_L[0-9].*", "", file),
+         Sample_UID = paste0(name, "-", run)) %>% 
+  dplyr::rename(cutadapt_in = reads_in,
+                cutadapt_out = reads_out) %>% 
+  group_by(Sample_UID, name) %>%
+  summarise(across(where(is.integer),  ~ sum(.x)), .groups="drop_last") %>%
+  mutate(cutadapt_out_perc = round(100*(cutadapt_out / cutadapt_in), digits = 2),
+         name = gsub("_", ".", name))
+
+sampleMetaData = left_join(sampleMetaData, trim_reads, by = "Sample_UID",
+                           suffix = c(".old", "")) %>% 
+  dplyr::select(!ends_with("old"))
+ # mutate(filt_reads_perc = round(100*(filt_reads / cutadapt_out), 
+                                 # digits = 2))
+  
+```
+
+```{r ribodetector}
+# Ribosomal reads are removed using ribodetector
+# The remaining reads can be found in the fastqc output after rRNA removal
+filt_reads = read.csv("processed_data/QC/filt_fastqc_230717.csv", 
+                      header = T, 
+                      strip.white = T, 
+                      stringsAsFactors = F)
+
+filt_reads = filt_reads %>% 
+  mutate(name = gsub("_L[0-9].*", "", sample),
+         Sample_UID = paste0(name, "-", run)) %>% 
+  filter(grepl("R1.*fastq.gz", sample)) %>% 
+  group_by(Sample_UID, name) %>% 
+  summarise(filt_reads = sum(reads), .groups="drop_last") %>% 
+  mutate(name = gsub("_", ".", name))
+
+sampleMetaData = left_join(sampleMetaData, filt_reads, 
+                           by = "Sample_UID", suffix = c(".old", "")) %>% 
+  dplyr::select(!ends_with("old")) %>% 
+  mutate(filt_reads_perc = round(100*(filt_reads / cutadapt_out), digits = 2))
+  
+
+```
+
+```{r mapped reads}
+STAR_files = list.files("processed_data", pattern = "STAR.*mapped_reads.txt", recursive = T)
+
+STAR_reads = lapply(STAR_files, 
+                    function(x) read.csv(file.path("processed_data", x)))
+names(STAR_reads) = str_extract(STAR_files, 
+                                pattern = "A[^/]*_[0-9]+")
+STAR_reads = bind_rows(STAR_reads, 
+                       .id = "run")
+
+STAR_reads = STAR_reads %>% 
+  mutate(name = gsub("_L[0-9].*", "", file),
+         Sample_UID = paste0(name, "-", run)) %>% 
+  dplyr::rename(STAR_out = mapped_reads) %>% 
+  group_by(Sample_UID, name) %>% 
+  summarise(across(where(is.integer),  ~ sum(.x)), .groups="drop_last") %>% 
+  mutate(name = gsub("_", ".", name))
+
+sampleMetaData = left_join(sampleMetaData, STAR_reads, 
+                           by = "Sample_UID", suffix = c(".old", "")) %>% 
+  dplyr::select(!ends_with("old")) %>% 
+  mutate(STAR_out_perc = round(100*(STAR_out / filt_reads), digits = 2))
+
+```
+
+```{r reads after subread dedup}
+count_reads = read.delim("processed_data/results_reverse/subreadcounts.txt.summary", 
+                         sep = "\t", 
+                         strip.white = T, 
+                         header = T)
+rownames(count_reads) = count_reads[[1]]
+count_reads = as.data.frame(t(count_reads[, -1]))
+
+count_reads = count_reads %>% 
+  rownames_to_column("name") %>% 
+  mutate(name = gsub("\\.bam", "",name),
+         name = gsub("_", ".", name)) %>% 
+  dplyr::select(name, 
+                assigned = Assigned, 
+                unassigned_multi = Unassigned_MultiMapping,
+                unassigned_nofeatures = Unassigned_NoFeatures, 
+                unassigned_ambiguity = Unassigned_Ambiguity) %>% 
+  mutate(across(-1, ~ as.integer(.x)))
+
+sampleMetaData = left_join(sampleMetaData, count_reads, 
+                           by = "name", suffix = c(".old", "")) %>% 
+  dplyr::select(!ends_with("old")) %>% 
+  mutate(assigned_perc = round(100*(assigned / STAR_out), digits = 2))
+
+
+# 
+```
+
+
+
+
 
 ### Differentially expressed genes with DESeq2
 
