@@ -1,0 +1,20 @@
+
+Mo:	Mapping QC (reads mapped to genes) 
+		
+	secondary:	Saturation
+		projects\044_Cell_lines_hypoxia\221107_Cell_lines_hypoxia_RNASeq.Rmd
+
+Tu:	Bern_2023 - mapped STAR - counted Subread - GRCh38
+	Scarpa_2017 (projects\046_RNASeq_count_data_collection) - mapped STAR - counted RSEM - GRCh37
+	Chan_2018 (projects\046_RNASeq_count_data_collection) - mapped STAR - counted RSEM - GRCh37
+	Alvarez_2018 (projects\006_Tumoroids_Viper\raw_data\Alvarez_viper\GSE98894) - mapped Bowtie - counted GenomicFeatures - (Hg19) GRCh37  (select pancreas primary)
+	
+	Join data sets 
+	check for batch effect (between sample groups)
+	
+We: Correct batch
+	Score hypoxia signatures
+	
+Th:	Compare scores with published results
+
+Fr:	Strategy for 2nd half of the project

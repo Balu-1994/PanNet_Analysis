@@ -1,0 +1,188 @@
+---
+title: "fastqc summary"
+output: html_document
+params: 
+  runNames: "A01975_24"
+  steps: "filt_fastqc_230717"
+  filename: "filt_fastqc_230717"
+---
+
+```{r setup, include=FALSE}
+# If more than one runfolder is used this can be specified in the header under runNames as a comma separated list
+# Likewise the steps indicate the name of the subdirectory containing the fastqc information
+# the parameter init controls the name of the output
+# knit needs to be used because rmarkdown::render does not include the tables for some reason
+# This means each output will get the same name and needs to be renamed
+knitr::opts_chunk$set(echo = FALSE)
+
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(formattable)
+```
+
+# `r params$filename` FastQC
+
+The read information can be extracted directly from the fastqc summary files and does not have to be computed separately. After extraction from the summary files it should be stored in a separate file for easier access when putting together the read summary information.
+
+```{r extract data}
+runNames = str_trim(unlist(str_split(params$runNames, pattern = ",")))
+steps = str_trim(unlist(str_split(params$steps, pattern = ",")))
+runFolders = paste0(runNames, "/", steps)
+
+makeTables = function(dataFolder){
+# The summary tables are within zipped folders and need to be extracted
+  fileList = list.files(paste0("./",dataFolder,"/"),"*.zip")
+  
+  getFastqc = function(file){
+    # getting the number of reads from the fastqc raw data
+    read.sum = read.delim(unz(paste0("./",dataFolder,"/",file), paste0(sub(".zip","",file),"/fastqc_data.txt")), header = F, skip = 6, nrows = 1)[1,2]
+    # getting the summary of quality measures
+    df = read.delim(unz(paste0("./",dataFolder,"/",file), paste0(sub(".zip","",file),"/summary.txt")),sep = "\t", header = F, stringsAsFactors = F)
+    
+    df_t = as.data.frame(t(df), stringsAsFactors = F)
+    colnames(df_t) = df$V2
+    df_t$sample = df$V3[1]
+    df_t$raw_reads = read.sum
+    return(df_t[1,])
+  }
+  QCdf = bind_rows(lapply(fileList,getFastqc))
+  QCdf$reads = prettyNum(QCdf$raw_reads,scientific = F, big.mark = ",")
+  rownames(QCdf) = NULL
+  return(QCdf)
+}
+
+QClist = setNames(lapply(runFolders, makeTables), runNames)
+
+# the reads were converted into a more easily readable format containing separators 
+# For the automatic processing the integer raw_reads need to be used (renamed to reads to fit the downstream pipeline)
+export = bind_rows(setNames(lapply(seq_len(length(QClist)), function(x){select(QClist[[x]],sample,reads = raw_reads)}), runFolders), .id = "run")
+export = export %>% separate(run, into = c("run", "step"), sep = "\\/")
+write.csv(export, paste0(params$filename, ".csv"), row.names = F)
+```
+
+```{r highlight QC results, results = "asis"}
+for(i in seq_len(length(QClist))) {
+  cat("  \n###",  runNames[i], ": ", steps[i], "\n")
+  print(
+    QClist[[i]] %>% select(- raw_reads) %>%
+      mutate_at(vars(1:11),
+                function(x){x = ifelse(x == "PASS",
+                                       cell_spec(x, background = "green", color = "green"),
+                                       ifelse(x == "FAIL",
+                                              cell_spec(x, background = "red", color = "red"),
+                                              cell_spec(x, background = "yellow", color = "yellow")))}) %>%
+      kable("html",escape = F) %>%
+      kable_styling("hover", font_size = 8) %>%
+      column_spec(12, width = "10cm"))
+  cat("  \n")
+}
+```
+
+------
+
+```{r extract overrepresented, eval=FALSE, include=FALSE}
+# This snippet of code will put together a list of overrepresented sequences that can be used for diagnostic purposes
+readOverrepresented = function(file, runName){
+  zipPath = paste0("./",runName,"/",file)
+  filePath = paste0(sub(".zip","",file),"/fastqc_data.txt")
+  
+  con = file(unzip(zipPath, filePath), "r")
+
+  lines = list()
+  overrep = F
+  while(TRUE){
+    line = readLines(con, 1)
+    if(length(line) == 0 ) break
+    else if (grepl(">>Overrepresented", line) || overrep == T){
+      if (length(lines) == 0 && overrep == F){
+        overrep = T
+        next
+      }
+      if (grepl(">>END_MODULE", line))
+        break
+      else{
+        lines[[length(lines) + 1]] = as.data.frame(str_split(line, "\\t"), fix.empty.names = F)
+      }
+    }
+  }
+  
+  close(con)
+  
+  unlink(sub(".zip","",file), recursive = T)
+  
+  if (length(lines) > 0){
+    lines = bind_cols(lines)
+    lines = as.data.frame(t(lines), row.names = F, stringsAsFactors = F)
+    colnames(lines) = unlist(lines[1,])
+    colnames(lines)[1] = "Sequence"
+    lines = lines[-1,]
+  } else {
+    lines = data.frame(Sequence = NA, Count = NA, Percentage = NA, `Possible Source` = NA, stringsAsFactors = F)
+  }
+
+  lines$runName = runName
+  lines$file = file
+
+  return(lines)
+}
+
+makeOverrepTable = function(runName){
+  fileList = list.files(paste0("./",runName,"/"),"*.zip")
+  overrep = bind_rows(lapply(fileList, readOverrepresented, runName = runName))
+  return(overrep)
+}
+
+overrep.all = bind_rows(lapply(runNames, makeOverrepTable))
+write.csv(overrep.all, "overrepresented_sequences.csv")
+```
+
+```{r processing of overrepresented reads, eval=FALSE, include=FALSE}
+overrep.all = read.csv("overrepresented_sequences.csv", header = T, stringsAsFactors = F)
+overrep.all = overrep.all %>% filter(!grepl("TruSeq", Possible.Source))
+
+overrep.export = overrep.all %>% group_by(Sequence) %>% summarise(n =n()) %>% arrange(desc(n))
+
+sink("fasta_files.txt")
+for (i in seq_len(nrow(overrep.export))){
+  cat(paste0(">overrepresented_sequence_",i,"\n"))
+  cat(paste0(overrep.export$Sequence[i],"\n"))
+}
+sink()
+```
+
+```{r parsing JSON, eval=FALSE, include=FALSE}
+# BLAST results can be returned in JSON format
+
+# The JSON file structure tends to be a bit convoluted and needs to be extracted into a regular data frame for summary
+# The parsing of the files does not work quite as expected
+# right now I just take the first 5 hits and filter for an NM in the gene description
+library(jsonlite)
+overrep.BLAST = fromJSON("overrepresented-Alignment.json")
+
+makeDfFromJSON = function(x){
+  
+  search = overrep.BLAST$BlastOutput2$report$results$search$query_title[x]
+  hits =  bind_rows(overrep.BLAST$BlastOutput2$report$results$search$hits[[x]]$description, .id = "ID")
+  if (nrow(hits) > 0){
+    #hits = hits %>% filter(!duplicated(ID))
+    scores = bind_rows(overrep.BLAST$BlastOutput2$report$results$search$hits[[x]]$hsps, .id = "ID")
+    #scores = scores %>% filter(!duplicated(ID_2))
+    combined = full_join(hits, scores, by = "ID")
+    combined$search = search
+    combined = combined %>% filter(bit_score == max(bit_score) & evalue == min(evalue))
+    combined = combined %>% arrange(desc(accession))
+    if (sum(grepl("^NM", combined$accession)) > 0)
+      combined = combined %>% filter(grepl("^NM", accession))
+    combined = combined %>% filter(!duplicated(ID))
+    combined = combined %>% select(search, accession, taxid, sciname, title, bit_score, evalue, identity)
+  }
+  else
+    combined = data.frame(search = search, accession = NA, taxid = NA, title = NA, bit_score = NA, evalue = NA, identity = NA, stringsAsFactors = F)
+  return(combined)
+}
+
+overrep.genes = bind_rows(lapply(seq_len(nrow(overrep.export)), makeDfFromJSON))
+
+write.csv(overrep.genes, "overrepresented_genes.csv")
+```

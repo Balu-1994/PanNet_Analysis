@@ -1,0 +1,245 @@
+
+        ==========     _____ _    _ ____  _____  ______          _____  
+        =====         / ____| |  | |  _ \|  __ \|  ____|   /\   |  __ \ 
+          =====      | (___ | |  | | |_) | |__) | |__     /  \  | |  | |
+            ====      \___ \| |  | |  _ <|  _  /|  __|   / /\ \ | |  | |
+              ====    ____) | |__| | |_) | | \ \| |____ / ____ \| |__| |
+        ==========   |_____/ \____/|____/|_|  \_\______/_/    \_\_____/
+	  v2.0.1
+
+//========================== featureCounts setting ===========================\\
+||                                                                            ||
+||             Input files : 25 BAM files                                     ||
+||                           o T_1_1.bam                                      ||
+||                           o T_1_2.bam                                      ||
+||                           o T_1_3.bam                                      ||
+||                           o T_1_4.bam                                      ||
+||                           o T_1_5.bam                                      ||
+||                           o T_1_6.bam                                      ||
+||                           o T_1_7.bam                                      ||
+||                           o T_1_8.bam                                      ||
+||                           o T_2_1.bam                                      ||
+||                           o T_2_2.bam                                      ||
+||                           o T_2_3.bam                                      ||
+||                           o T_2_4.bam                                      ||
+||                           o T_2_5.bam                                      ||
+||                           o T_2_6.bam                                      ||
+||                           o T_2_7.bam                                      ||
+||                           o T_2_8.bam                                      ||
+||                           o T_3_1.bam                                      ||
+||                           o T_3_2.bam                                      ||
+||                           o T_3_3.bam                                      ||
+||                           o T_3_4.bam                                      ||
+||                           o T_3_5.bam                                      ||
+||                           o T_3_6.bam                                      ||
+||                           o T_4_1.bam                                      ||
+||                           o T_4_2.bam                                      ||
+||                           o T_4_3.bam                                      ||
+||                                                                            ||
+||             Output file : subreadcounts.txt                                ||
+||                 Summary : subreadcounts.txt.summary                        ||
+||              Annotation : gencode.v38.primary_assembly.annotation.SIRV ... ||
+||      Dir for temp files : results_reverse                                  ||
+||                                                                            ||
+||                 Threads : 8                                                ||
+||                   Level : meta-feature level                               ||
+||              Paired-end : yes                                              ||
+||      Multimapping reads : not counted                                      ||
+|| Multi-overlapping reads : not counted                                      ||
+||   Min overlapping bases : 1                                                ||
+||                                                                            ||
+||          Chimeric reads : counted                                          ||
+||        Both ends mapped : not required                                     ||
+||                                                                            ||
+\\============================================================================//
+
+//================================= Running ==================================\\
+||                                                                            ||
+|| Load annotation file gencode.v38.primary_assembly.annotation.SIRV.gtf ...  ||
+||    Features : 1499716                                                      ||
+||    Meta-features : 60807                                                   ||
+||    Chromosomes/contigs : 146                                               ||
+||                                                                            ||
+|| Process BAM file T_1_1.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 50537051                                             ||
+||    Successfully assigned alignments : 22752537 (45.0%)                     ||
+||    Running time : 0.56 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_1_2.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 50970474                                             ||
+||    Successfully assigned alignments : 21315075 (41.8%)                     ||
+||    Running time : 0.53 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_1_3.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 49145950                                             ||
+||    Successfully assigned alignments : 28524976 (58.0%)                     ||
+||    Running time : 0.71 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_1_4.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 37859631                                             ||
+||    Successfully assigned alignments : 23230501 (61.4%)                     ||
+||    Running time : 0.40 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_1_5.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 38555747                                             ||
+||    Successfully assigned alignments : 20202935 (52.4%)                     ||
+||    Running time : 0.45 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_1_6.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 52704061                                             ||
+||    Successfully assigned alignments : 31211201 (59.2%)                     ||
+||    Running time : 0.51 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_1_7.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 44434728                                             ||
+||    Successfully assigned alignments : 15690834 (35.3%)                     ||
+||    Running time : 0.36 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_1_8.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 43138279                                             ||
+||    Successfully assigned alignments : 19243225 (44.6%)                     ||
+||    Running time : 0.48 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_2_1.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 45872076                                             ||
+||    Successfully assigned alignments : 20171536 (44.0%)                     ||
+||    Running time : 0.52 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_2_2.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 50736103                                             ||
+||    Successfully assigned alignments : 21946405 (43.3%)                     ||
+||    Running time : 0.37 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_2_3.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 38504754                                             ||
+||    Successfully assigned alignments : 18551482 (48.2%)                     ||
+||    Running time : 0.30 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_2_4.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 37874411                                             ||
+||    Successfully assigned alignments : 20122649 (53.1%)                     ||
+||    Running time : 0.40 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_2_5.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 42319130                                             ||
+||    Successfully assigned alignments : 16299944 (38.5%)                     ||
+||    Running time : 0.54 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_2_6.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 43392757                                             ||
+||    Successfully assigned alignments : 16464187 (37.9%)                     ||
+||    Running time : 0.33 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_2_7.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 50995302                                             ||
+||    Successfully assigned alignments : 20602037 (40.4%)                     ||
+||    Running time : 0.46 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_2_8.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 45161589                                             ||
+||    Successfully assigned alignments : 19881688 (44.0%)                     ||
+||    Running time : 0.65 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_3_1.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 48794724                                             ||
+||    Successfully assigned alignments : 18543347 (38.0%)                     ||
+||    Running time : 0.48 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_3_2.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 47682678                                             ||
+||    Successfully assigned alignments : 22109010 (46.4%)                     ||
+||    Running time : 0.58 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_3_3.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 45546003                                             ||
+||    Successfully assigned alignments : 22169057 (48.7%)                     ||
+||    Running time : 0.68 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_3_4.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 40353221                                             ||
+||    Successfully assigned alignments : 18485446 (45.8%)                     ||
+||    Running time : 0.48 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_3_5.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 42650739                                             ||
+||    Successfully assigned alignments : 17418598 (40.8%)                     ||
+||    Running time : 0.35 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_3_6.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 48331624                                             ||
+||    Successfully assigned alignments : 20241818 (41.9%)                     ||
+||    Running time : 0.61 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_4_1.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 42479156                                             ||
+||    Successfully assigned alignments : 18579636 (43.7%)                     ||
+||    Running time : 0.57 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_4_2.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 46145653                                             ||
+||    Successfully assigned alignments : 21631089 (46.9%)                     ||
+||    Running time : 0.47 minutes                                             ||
+||                                                                            ||
+|| Process BAM file T_4_3.bam...                                              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 48192051                                             ||
+||    Successfully assigned alignments : 18102273 (37.6%)                     ||
+||    Running time : 0.42 minutes                                             ||
+||                                                                            ||
+|| Write the final count table.                                               ||
+|| Write the read assignment summary.                                         ||
+||                                                                            ||
+|| Summary of counting results can be found in file "results_reverse/subread  ||
+|| counts.txt.summary"                                                        ||
+||                                                                            ||
+\\============================================================================//
+

@@ -1,0 +1,241 @@
+---
+title: "Pannet_Data_Analysis"
+output: html_document
+date: "2023-07-17"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+
+library(DESeq2)
+library(RColorBrewer)
+library(ggplot2)
+library(gplots)
+library(pheatmap)
+library(ggrepel)
+library("BiocParallel")
+library(ggpubr)
+library(factoextra)
+library("PoiClaClu")
+library(ggrepel)
+library(cowplot)
+library(readxl)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(stringr)
+register(MulticoreParam(4))
+
+dataDir = "C:/Users/br23n469/Desktop/PanNet_RNASeq_Analysis"
+```
+
+## R Markdown
+
+```{r processing co_extraction DESI DNA RNA data, echo=TRUE}
+
+# Read the DESI_DNA_RNA_rep Excel file, sheet name = Total RNA extraction.
+desiDNARNARep <- suppressMessages(read_excel("meta_data/20020505_Tissue for co_extraction_DESI_DNA_RNA_rep.update_23.9.22.xlsx", sheet = "Total RNA extraction", 
+                                             .name_repair = "unique"))
+
+# Specify the column names you want to extract
+vectorNameColumns <- c("Date of isolation", "...3", "B-Nr_Original", "B-Nr.", "RQN from Vetsuisse", 
+                       "Vetsuisse results after their Qubit")
+
+# Specify the row range you want to extract
+vectorNameRows <- 1:25
+
+# Extract the desired rows and columns from the Excel data and convert it to a data frame
+df.desiDNARNARep <- as.data.frame(desiDNARNARep[vectorNameRows, vectorNameColumns])
+
+# Rename the column '...3' to 'Id'
+colnames(df.desiDNARNARep)[colnames(df.desiDNARNARep) == "...3"] <- "Id"
+
+# Function to replace data starting with dot R. with an empty value
+replace_R_with_empty <- function(data) {
+  data <- lapply(data, function(col) {
+    gsub("^R.", "", col) # Replace data starting with R. with an empyty value
+  })
+}
+
+df.desiDNARNARep$Id <- (replace_R_with_empty(df.desiDNARNARep$Id))
+
+# Convert data types of the dataframe
+df.desiDNARNARep <- type.convert(df.desiDNARNARep, as.is = TRUE)
+
+# Apply the 'str_trim' function to remove leading and trailing whitespace from all columns of 'df.desiDNARNARep'
+df.desiDNARNARep <- df.desiDNARNARep %>%
+  mutate_all(str_trim)
+
+```
+
+
+```{r sample DESI and RNA extraction data, echo=TRUE}
+
+# Read the samples for DESI and RNA extraction Excel file.
+sampleDNARNAExtra <- suppressMessages(read_excel("meta_data/samples for DESI and RNA extraction.xlsx", 
+                            sheet = "Sheet2", .name_repair = "unique"))
+
+# Specify the column names you want to extract
+vectorNameColumns2 <- c("B-Nr.", "Archivia", "Geschlecht", "Organ",  "Reubi /TBBCollection", 
+                       "WHO 2017", "WHO 2017 code", "CA9 primary tumors", 
+                       "MCT1_TMA", "MCT4_TMA", "MCT4 (new scoring)", "DESI")
+
+# Specify the row range you want to extract
+vectorNameRows2 <- 1:31
+
+# Extract the desired rows and columns from the Excel data and convert it to a data frame
+df.sampleDNARNAExtra <- as.data.frame(sampleDNARNAExtra[vectorNameRows2, vectorNameColumns2])
+
+# Convert data types of the dataframe
+df.sampleDNARNAExtra <- type.convert(df.sampleDNARNAExtra, as.is = TRUE)
+
+# Apply the 'str_trim' function to remove leading and trailing whitespace 
+# from all columns of 'df.sampleDNARNAExtra'
+df.sampleDNARNAExtra <- df.sampleDNARNAExtra %>%
+  mutate_all(str_trim)
+df.sampleDNARNAExtra$Geschlecht <- ifelse(df.sampleDNARNAExtra$Geschlecht == "m", "male", ifelse(df.sampleDNARNAExtra$Geschlecht == "f", "female", "female"))
+
+```
+
+```{r Joining co_extraction and sample data, echo=TRUE}
+
+# Perform a left join on the two data frames using the "B-Nr." column.
+df.desiDNARNASample <- left_join(df.desiDNARNARep, df.sampleDNARNAExtra, by="B-Nr.")
+
+# Add a new "name" by appending "T." to the existing "Id" column.
+df.desiDNARNASample$name <- paste0("T.", df.desiDNARNASample$Id)
+
+```
+
+
+
+```{r init reads}
+# The number of reads is determined using the fastqc output and added to the metadata
+init_reads = read.csv("processed_data/QC/init_fastqc_221027.csv", 
+                      header = T, 
+                      strip.white = T, 
+                      stringsAsFactors = F)
+
+init_reads = init_reads %>% 
+  mutate(Sample_Name = gsub("_L[0-9].*", "", sample),
+         Sample_UID = paste0(Sample_Name, "-", run)) %>% 
+  filter(grepl("R1.*fastq.gz", sample)) %>% 
+  group_by(Sample_UID, Sample_Name) %>% 
+  summarise(raw_reads = sum(reads), .groups="drop_last")
+  
+  
+# CEL_seq_info = left_join(CEL_seq_info, 
+                         #filt_reads, 
+                         #by = "Sample_UID",
+                         # suffix = c(".old", "")) %>% 
+  #dplyr::select(!ends_with("old")) %>% 
+ # mutate(filt_reads_perc = round(100*(filt_reads / cutadapt_out), 
+                                 # digits = 2))
+  
+
+```
+
+```{r trim reads}
+# The reads are processed through read trimming This data is read from the cutadapt logs and saved in a summary file
+# For each sequencing run cutadapt is executed separately and the summary is stored in the respective run folder
+
+cutadapt_files = list.files("processed_data", pattern = "cutadapt.*summary", recursive = T)
+
+
+trim_reads = lapply(cutadapt_files, 
+                    function(x) read.csv(file.path("processed_data", x)))
+
+names(trim_reads) = str_extract(cutadapt_files, 
+                                pattern = "A[^/]*_[0-9]+")
+
+trim_reads = bind_rows(trim_reads, 
+                       .id = "run")
+
+trim_reads = trim_reads %>% 
+  mutate(Sample_Name = gsub("_L[0-9].*", "", file),
+         Sample_UID = paste0(Sample_Name, "-", run)) %>% 
+  dplyr::rename(cutadapt_in = reads_in,
+                cutadapt_out = reads_out) %>% 
+  group_by(Sample_UID, Sample_Name) %>%
+  summarise(across(where(is.integer),  ~ sum(.x)), .groups="drop_last") %>%
+  mutate(cutadapt_out_perc = round(100*(cutadapt_out / cutadapt_in), digits = 2),
+         Sample_Name = gsub("_", ".", Sample_Name))
+  
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r ribodetector}
+# Ribosomal reads are removed using ribodetector
+# The remaining reads can be found in the fastqc output after rRNA removal
+filt_reads = read.csv("processed_data/QC/filt_fastqc_230717.csv", 
+                      header = T, 
+                      strip.white = T, 
+                      stringsAsFactors = F)
+
+filt_reads = filt_reads %>% 
+  mutate(Sample_Name = gsub("_L[0-9].*", "", sample),
+         Sample_UID = paste0(Sample_Name, "-", run)) %>% 
+  filter(grepl("R1.*fastq.gz", sample)) %>% 
+  group_by(Sample_UID, Sample_Name) %>% 
+  summarise(filt_reads = sum(reads), .groups="drop_last") %>% 
+  mutate(Sample_Name = gsub("_", ".", Sample_Name))
+  
+
+  #filt_reads_perc = round(100*(filt_reads / cutadapt_out), digits = 2))
+
+```
+
+```{r mapped reads}
+STAR_files = list.files("processed_data", pattern = "STAR.*mapped_reads.txt", recursive = T)
+
+STAR_reads = lapply(STAR_files, 
+                    function(x) read.csv(file.path("processed_data", x)))
+names(STAR_reads) = str_extract(STAR_files, 
+                                pattern = "A[^/]*_[0-9]+")
+STAR_reads = bind_rows(STAR_reads, 
+                       .id = "run")
+
+STAR_reads = STAR_reads %>% 
+  mutate(Sample_Name = gsub("_L[0-9].*", "", file),
+         Sample_UID = paste0(Sample_Name, "-", run)) %>% 
+  dplyr::rename(STAR_out = mapped_reads) %>% 
+  group_by(Sample_UID, Sample_Name) %>% 
+  summarise(across(where(is.integer),  ~ sum(.x)), .groups="drop_last") %>% 
+  mutate(Sample_Name = gsub("_", ".", Sample_Name))
+
+# STAR_out_perc = round(100*(STAR_out / filt_reads), digits = 2)
+
+```
+
+
+```{r reads after subread dedup}
+count_reads = read.delim("processed_data/results_reverse/subreadcounts.txt.summary", 
+                         sep = "\t", 
+                         strip.white = T, 
+                         header = T)
+rownames(count_reads) = count_reads[[1]]
+count_reads = as.data.frame(t(count_reads[, -1]))
+
+count_reads = count_reads %>% 
+  rownames_to_column("Sample_Name") %>% 
+  mutate(Sample_Name = gsub("\\.bam", "",Sample_Name),
+         Sample_Name = gsub("_", ".", Sample_Name)) %>% 
+  dplyr::select(Sample_Name, 
+                assigned = Assigned, 
+                unassigned_multi = Unassigned_MultiMapping,
+                unassigned_nofeatures = Unassigned_NoFeatures, 
+                unassigned_ambiguity = Unassigned_Ambiguity) %>% 
+  mutate(across(-1, ~ as.integer(.x)))
+
+# assigned_perc = round(100*(assigned / STAR_out), digits = 2)
+```
+
+
+
+
+
+
+
+
+

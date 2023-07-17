@@ -1,5 +1,5 @@
 ---
-title: "PAnNET_QA_Analysis_Sample_Data"
+title: "PAnNET QA Analysis Sample Data"
 date: "__`r lubridate::today()`__"
 output: 
   html_document:
@@ -164,7 +164,7 @@ sampleDNARNAExtra <- suppressMessages(read_excel("meta_data/samples for DESI and
 
 # Specify the column names you want to extract
 vectorNameColumns2 <- c("B-Nr.", "Archivia", "Geschlecht", "Organ",  "Reubi /TBBCollection", 
-                       "WHO 2017", "WHO 2017 code", "CA9 Primärtumoren", 
+                       "WHO 2017", "WHO 2017 code", "CA9 primary tumors", 
                        "MCT1_TMA", "MCT4_TMA", "MCT4 (new scoring)", "DESI")
 
 # Specify the row range you want to extract
