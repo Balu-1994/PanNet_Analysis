@@ -13,6 +13,7 @@ output:
 knitr::opts_chunk$set(echo = FALSE)
 
 library(DESeq2)
+library(readr)
 library(RColorBrewer)
 library(ggplot2)
 library(gplots)
@@ -29,9 +30,14 @@ library(tidyverse)
 library(dplyr)
 library(tidyr)
 library(stringr)
+library(DT)
+
+library(foreach)
+library(doParallel)
+
 register(MulticoreParam(4))
 
-expression_dir = "/Users/balu/Desktop/PanNet_Analysis"
+expression_dir = "C:/Users/br23n469/Desktop/PanNet_RNASeq_Analysis"
 
 ```
 
@@ -82,8 +88,9 @@ samples_df <- data.frame(condition = condition_column,
 # Convert 'condition' column to factor
 samples_df$condition = factor(samples_df$condition)
 
-# The table contains values for each CDS included in the sub_read_count_data  variable.
+# The table contains values for each CDS included in the sub_read_count_data variable.
 sub_read_count_data <- read.table("subreadcounts.txt", header = TRUE, row.names = 1)
+
 
 # Remove specific columns from sub_read_count_data like 'Chr', 'Start', 'End', 'Strand' and 'Length'.
 sub_read_count_data <- sub_read_count_data[ , -c(3, 4, 1, 2,5)]
@@ -196,23 +203,25 @@ df.desiDNARNASample$name <- paste0("T.", df.desiDNARNASample$Id)
 
 ```
 
-## Data quality assessment 
+## Meta data
 
-```{r MetaData, echo=TRUE}
+The meta data is extracted from the 'samples for DESI and RNA extraction' file names, with the unique identifiers.
 
-# metaData
-sampleMetaData <- df.desiDNARNASample
+```{r Creating CEL_seq_info}
+
+# Sample information
+CEL_seq_info <- df.desiDNARNASample
 
 ```
 
 ```{r init reads}
 # The number of reads is determined using the fastqc output and added to the metadata
-init_reads = read.csv("processed_data/QC/init_fastqc_221027.csv", 
+init_reads <- read.csv("processed_data/QC/init_fastqc_221027.csv", 
                       header = T, 
                       strip.white = T, 
                       stringsAsFactors = F)
 
-init_reads = init_reads %>% 
+init_reads <- init_reads %>% 
   mutate(name = gsub("_L[0-9].*", "", sample),
          Sample_UID = paste0(name, "-", run)) %>% 
   filter(grepl("R1.*fastq.gz", sample)) %>% 
@@ -220,7 +229,7 @@ init_reads = init_reads %>%
   summarise(raw_reads = sum(reads), .groups="drop_last") %>% 
   mutate(name = gsub("_", ".", name))
   
-sampleMetaData = left_join(sampleMetaData, init_reads, by = "name",
+CEL_seq_info <- left_join(CEL_seq_info, init_reads, by = "name",
                            suffix = c(".old", "")) %>%
   dplyr::select(!ends_with("old"))
 
@@ -231,19 +240,19 @@ sampleMetaData = left_join(sampleMetaData, init_reads, by = "name",
 # The reads are processed through read trimming This data is read from the cutadapt logs and saved in a summary file
 # For each sequencing run cutadapt is executed separately and the summary is stored in the respective run folder
 
-cutadapt_files = list.files("processed_data", pattern = "cutadapt.*summary", recursive = T)
+cutadapt_files <- list.files("processed_data", pattern = "cutadapt.*summary", recursive = T)
 
 
-trim_reads = lapply(cutadapt_files, 
+trim_reads <- lapply(cutadapt_files, 
                     function(x) read.csv(file.path("processed_data", x)))
 
-names(trim_reads) = str_extract(cutadapt_files, 
+names(trim_reads) <- str_extract(cutadapt_files, 
                                 pattern = "A[^/]*_[0-9]+")
 
-trim_reads = bind_rows(trim_reads, 
+trim_reads <- bind_rows(trim_reads, 
                        .id = "run")
 
-trim_reads = trim_reads %>% 
+trim_reads <- trim_reads %>% 
   mutate(name = gsub("_L[0-9].*", "", file),
          Sample_UID = paste0(name, "-", run)) %>% 
   dplyr::rename(cutadapt_in = reads_in,
@@ -253,23 +262,24 @@ trim_reads = trim_reads %>%
   mutate(cutadapt_out_perc = round(100*(cutadapt_out / cutadapt_in), digits = 2),
          name = gsub("_", ".", name))
 
-sampleMetaData = left_join(sampleMetaData, trim_reads, by = "Sample_UID",
-                           suffix = c(".old", "")) %>% 
-  dplyr::select(!ends_with("old"))
- # mutate(filt_reads_perc = round(100*(filt_reads / cutadapt_out), 
-                                 # digits = 2))
+CEL_seq_info <- left_join(CEL_seq_info, trim_reads, 
+                          by=c('Sample_UID'='Sample_UID', 'name'='name'),
+                          suffix = c(".old", ""))  %>% 
+  dplyr::select(!ends_with("old"))  %>% 
+  mutate(cutadapt_out_perc = round(100*(cutadapt_out / cutadapt_in), 
+                                   digits = 2))
   
 ```
 
 ```{r ribodetector}
 # Ribosomal reads are removed using ribodetector
 # The remaining reads can be found in the fastqc output after rRNA removal
-filt_reads = read.csv("processed_data/QC/filt_fastqc_230717.csv", 
+filt_reads <- read.csv("processed_data/QC/filt_fastqc_230717.csv", 
                       header = T, 
                       strip.white = T, 
                       stringsAsFactors = F)
 
-filt_reads = filt_reads %>% 
+filt_reads<- filt_reads %>% 
   mutate(name = gsub("_L[0-9].*", "", sample),
          Sample_UID = paste0(name, "-", run)) %>% 
   filter(grepl("R1.*fastq.gz", sample)) %>% 
@@ -277,8 +287,9 @@ filt_reads = filt_reads %>%
   summarise(filt_reads = sum(reads), .groups="drop_last") %>% 
   mutate(name = gsub("_", ".", name))
 
-sampleMetaData = left_join(sampleMetaData, filt_reads, 
-                           by = "Sample_UID", suffix = c(".old", "")) %>% 
+CEL_seq_info <- left_join(CEL_seq_info, filt_reads, 
+                          by=c('Sample_UID'='Sample_UID', 'name'='name'), 
+                          suffix = c(".old", "")) %>% 
   dplyr::select(!ends_with("old")) %>% 
   mutate(filt_reads_perc = round(100*(filt_reads / cutadapt_out), digits = 2))
   
@@ -286,16 +297,16 @@ sampleMetaData = left_join(sampleMetaData, filt_reads,
 ```
 
 ```{r mapped reads}
-STAR_files = list.files("processed_data", pattern = "STAR.*mapped_reads.txt", recursive = T)
+STAR_files <- list.files("processed_data", pattern = "STAR.*mapped_reads.txt", recursive = T)
 
-STAR_reads = lapply(STAR_files, 
+STAR_reads<- lapply(STAR_files, 
                     function(x) read.csv(file.path("processed_data", x)))
-names(STAR_reads) = str_extract(STAR_files, 
+names(STAR_reads) <- str_extract(STAR_files, 
                                 pattern = "A[^/]*_[0-9]+")
-STAR_reads = bind_rows(STAR_reads, 
+STAR_reads <- bind_rows(STAR_reads, 
                        .id = "run")
 
-STAR_reads = STAR_reads %>% 
+STAR_reads <- STAR_reads %>% 
   mutate(name = gsub("_L[0-9].*", "", file),
          Sample_UID = paste0(name, "-", run)) %>% 
   dplyr::rename(STAR_out = mapped_reads) %>% 
@@ -303,22 +314,22 @@ STAR_reads = STAR_reads %>%
   summarise(across(where(is.integer),  ~ sum(.x)), .groups="drop_last") %>% 
   mutate(name = gsub("_", ".", name))
 
-sampleMetaData = left_join(sampleMetaData, STAR_reads, 
-                           by = "Sample_UID", suffix = c(".old", "")) %>% 
+CEL_seq_info <- left_join(CEL_seq_info, STAR_reads, 
+                           by=c('Sample_UID'='Sample_UID', 'name'='name'), suffix = c(".old", "")) %>% 
   dplyr::select(!ends_with("old")) %>% 
   mutate(STAR_out_perc = round(100*(STAR_out / filt_reads), digits = 2))
 
 ```
 
 ```{r reads after subread dedup}
-count_reads = read.delim("processed_data/results_reverse/subreadcounts.txt.summary", 
+count_reads <- read.delim("processed_data/results_reverse/subreadcounts.txt.summary", 
                          sep = "\t", 
                          strip.white = T, 
                          header = T)
-rownames(count_reads) = count_reads[[1]]
-count_reads = as.data.frame(t(count_reads[, -1]))
+rownames(count_reads) <- count_reads[[1]]
+count_reads <- as.data.frame(t(count_reads[, -1]))
 
-count_reads = count_reads %>% 
+count_reads <- count_reads %>% 
   rownames_to_column("name") %>% 
   mutate(name = gsub("\\.bam", "",name),
          name = gsub("_", ".", name)) %>% 
@@ -329,18 +340,141 @@ count_reads = count_reads %>%
                 unassigned_ambiguity = Unassigned_Ambiguity) %>% 
   mutate(across(-1, ~ as.integer(.x)))
 
-sampleMetaData = left_join(sampleMetaData, count_reads, 
+CEL_seq_info <- left_join(CEL_seq_info, count_reads, 
                            by = "name", suffix = c(".old", "")) %>% 
   dplyr::select(!ends_with("old")) %>% 
   mutate(assigned_perc = round(100*(assigned / STAR_out), digits = 2))
 
+```
 
-# 
+```{r add meta data}
+# Adding the metadata 
+CEL_metaData <- CEL_seq_info
+
+# The meta data is saved to be useful later on
+saveRDS(CEL_metaData, 
+        "meta_data/CEL_metaData.Rds")
+```
+
+```{r processing the raw counts}
+CEL_countTable <- read_delim("processed_data/results_reverse/subreadcounts.txt", 
+                             skip = 1,
+                             show_col_types = FALSE) %>% 
+  setNames(gsub("_", ".", names(.))) %>% 
+  dplyr::rename(gene_id = Geneid)  
+
+  
+# removing the version numbers from the gene ids
+CEL_countTable$gene_id = gsub("\\.[0-9]*$", "" , CEL_countTable$gene_id)
+
+makeCountData = function(IDs, countTable, name_suffix){
+  countTable = as.data.frame(countTable)
+  colnames(countTable) = gsub(name_suffix, "", colnames(countTable))
+  rownames(countTable) = countTable$gene_id
+  countTable[, IDs]
+  
+}
+
+CEL_countData = makeCountData(CEL_metaData$name, 
+                              countTable = CEL_countTable,
+                              name_suffix = "\\.bam")
+stopifnot(all.equal(colnames(CEL_countData), CEL_metaData$name))
+
+# The expression of certain gene groups can be used for quality control
+getGenePerc = function(colData, 
+                       countData, 
+                       goi, 
+                       goi_name){
+  colData[goi_name] = colSums(countData[rownames(countData) %in% goi, ])
+  colData[paste0(goi_name, "_perc")] = round((colData[[goi_name]] / colData[["assigned"]]) * 100, 
+                                             digits = 2)
+  return(colData)
+}
+
+# reads mapping to mitochondrial genes 
+CEL_metaData = getGenePerc(CEL_metaData, 
+                           CEL_countData, 
+                           goi = CEL_countTable$gene_id[CEL_countTable$Chr == "chrM"], 
+                           goi_name = "mito")
+# reads mapping to MALAT1 (extremely high coverage in some samples)
+CEL_metaData = getGenePerc(CEL_metaData, 
+                           CEL_countData, 
+                           goi = "ENSG00000251562", 
+                           goi_name = "MALAT1")
+# reads mapping to the spike ins 
+CEL_metaData = getGenePerc(CEL_metaData, 
+                           CEL_countData, 
+                           goi = CEL_countTable$gene_id[grepl("^ERCC|^SIR", CEL_countTable$gene_id)], 
+                           goi_name = "spikein")
+
+# It may be possible to define detected genes on fpkm but this is not really necessary 
+CEL_metaData$detected_genes = colSums(CEL_countData > 10)
+CEL_metaData$filtered_reads = colSums(CEL_countData)
+
+```
+
+## Data quality assessment
+
+### Overview over the processing
+
+* library preparation `TruSeq stranded total RNA` 
+* adapter trimming and removal of long homopolymers (`cutadapt`)
+* removal of ribosomal sequences (`ribodetector`)
+* mapping to GRCh38, Ensembl v104 (`STAR`)
+* assigning reads to genes (`subread featurecounts`)
+
+```{r sample information unitil rRNA}
+CEL_metaData %>% 
+  dplyr::select(c(name, raw_reads, 
+                  cutadapt_out:cutadapt_out_perc, 
+                  filt_reads, filt_reads_perc)) %>%
+  rename("sample name" = name) %>%
+  datatable(options = list(
+    initComplete = JS(
+      "function(settings, json) {",
+      "$(this.api().table().header()).css({'font-size': '10px'});",
+      "$(this.api().table().body()).css({'font-size': '9px'});",
+      "}"),
+    columnDefs = list(list(className = 'dt-center', targets = "_all"))
+  ),
+  class = 'cell-border stripe table-condensed',
+  rownames = F,
+  colnames = gsub("_", "\n", colnames(.)),
+  filter = "top",
+  caption = "RNA-Seq processing from raw reads to ribosomal contamination")
+
+
+```
+
+* For each sample about 40 million reads were sequenced  
+* Adapter content is low with 2%
+* The adapter content was higher in the R2 compared to the R1; In most cases the removed sequences are long stretches of the same base (mainly poly-G)
+* Ribosomal RNAs are removed using the `ribodetector` tool; This detects about 5% of all sequences as ribosomal.
+
+
+```{r sample information from mapping}
+CEL_metaData %>% 
+  dplyr::select(c(name, filt_reads, 
+                  STAR_out:assigned_perc)) %>% 
+  rename("sample name" = name) %>%
+  datatable(options = list(
+    initComplete = JS(
+      "function(settings, json) {",
+      "$(this.api().table().header()).css({'font-size': '10px'});",
+      "$(this.api().table().body()).css({'font-size': '9px'});",
+      "}"),
+    columnDefs = list(list(className = 'dt-center', targets = "_all"))
+  ),
+  class = 'cell-border stripe table-condensed',
+  rownames = F,
+  colnames = gsub("_", "\n", colnames(.)),
+  filter = "top",
+  caption = "RNA-Seq processing from mapping to gene counting") 
 ```
 
 
-
-
+* Approximately 87% to 92% of read pairs can be mapped uniquely.
+* Surprisingly, only between 40% and 70% of reads can be assigned to genomic features.
 
 ### Differentially expressed genes with DESeq2
 
@@ -515,7 +649,7 @@ whoPCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = pcaData$WHO_2017)) + geom_po
   ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
   theme_classic() + labs(color = "WHO 2017")
 
-ca9PCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = pcaData$CA9_Primärtumoren)) + geom_point(size = 3) + 
+ca9PCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = pcaData$CA9_primary_tumors)) + geom_point(size = 3) + 
   geom_text_repel(aes(label = pcaData$rep), size = 3, color = "black") +
   xlab(paste0("PC1: ",percentVar[1],"% variance")) +
   ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
@@ -528,8 +662,6 @@ plot_grid(coollectionPCAPlot, RQNPCAPlot,whoPCAPlot,ca9PCAPlot, ncol=2, nrow=2, 
 ```
 
 ```{r pcaPlots with mct,  fig.height = 6, fig.width = 8, echo=TRUE}
- 
-
  
 # Create a scatter plot of PC1 vs PC2
 MCT1PCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = pcaData$MCT1_TMA)) + geom_point(size = 3) + 
@@ -558,11 +690,55 @@ RQNPCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = RQN_from_Vetsuisse)) + geom_
   ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
   theme_classic() + labs(color = "RQN from\nVetsuisse")
 
- 
-
 # Creating PCA plots
 plot_grid(MCT1PCAPlot, MCT2PCAPlot,MCT2NewPCAPlot, RQNPCAPlot, ncol=2,  nrow=2, 
           align="h")
+
+```
+```{r pcaPlots with assigned_perc,  fig.height = 6, fig.width = 8, echo=TRUE}
+
+# Add clusters obtained using the K-means algorithm to pcaData
+pcaData$assigned_perc <- as.numeric(CEL_metaData$assigned_perc)
+ 
+# Create a scatter plot of PC1 vs PC2
+assignedPercPCAPlot <- ggplot(pcaData, aes(PC1, PC2, color = pcaData$assigned_perc, shape = condition)) + geom_point(size = 3) + 
+  geom_text_repel(aes(label = pcaData$rep), size = 3, color = "black") +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme_classic() + labs(color = "Assigned\ngenomic\nfeatures%")
+
+# Calculate the median of assigned_perc
+median_assigned_perc <- median(pcaData$assigned_perc)
+
+# Create a new column to indicate whether each row is above or below the median
+pcaData$above_median <- ifelse(pcaData$assigned_perc > median_assigned_perc, "Above", "Below")
+
+# Create a scatter plot of PC1 vs PC2 with points colored by the above_median column
+assignedPercMedianPlot <- ggplot(pcaData, aes(PC1, PC2, color = above_median, shape = condition)) + 
+  geom_point(size = 3) + 
+  geom_text_repel(aes(label = rep), size = 3, color = "black") +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+  theme_classic() + 
+  labs(color = "Median\nAssigned\nfeatures%") 
+
+
+# Create a box plot of assigned_perc with different groups
+assignePercboxPlot <- ggplot(pcaData, aes(x = factor(condition), y = assigned_perc)) +
+  geom_boxplot(fill = "lightblue", color = "black", outlier.shape = NA, utlier.colour = "red",
+               outlier.size = 3) +
+  geom_jitter(
+    color = "darkblue",
+    alpha = 0.6,
+    width = 0.2
+  ) +
+  xlab("Condition") +
+  ylab("Assigned Genomic Features %") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for better readability
+
+# Creating PCA plots
+plot_grid(assignedPercPCAPlot, assignedPercMedianPlot, assignePercboxPlot, ncol=2,  nrow=2, align="h")
 
 ```
 
