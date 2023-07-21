@@ -171,7 +171,7 @@ sampleDNARNAExtra <- suppressMessages(read_excel("meta_data/samples for DESI and
 
 # Specify the column names you want to extract
 vectorNameColumns2 <- c("B-Nr.", "Archivia", "Geschlecht", "Organ",  "Reubi /TBBCollection", 
-                       "WHO 2017", "WHO 2017 code", "CA9 primary tumors", 
+                       "WHO 2017", "WHO 2017 code", "CA9 primary tumors", "Daxx/AtrxTMA11+18", 
                        "MCT1_TMA", "MCT4_TMA", "MCT4 (new scoring)", "DESI")
 
 # Specify the row range you want to extract
@@ -200,6 +200,8 @@ df.desiDNARNASample <- left_join(df.desiDNARNARep, df.sampleDNARNAExtra, by="B-N
 
 # Add a new "name" by appending "T." to the existing "Id" column.
 df.desiDNARNASample$name <- paste0("T.", df.desiDNARNASample$Id)
+
+write.csv(df.desiDNARNASample, "meta_data\\Bern_Smaples_Meta_Data.csv", row.names=FALSE)
 
 ```
 
@@ -369,7 +371,7 @@ CEL_countTable$gene_id = gsub("\\.[0-9]*$", "" , CEL_countTable$gene_id)
 
 makeCountData = function(IDs, countTable, name_suffix){
   countTable = as.data.frame(countTable)
-  colnames(countTable) = gsub(name_suffix, "", colnames(countTable))
+  colnames(countTable) = gsub("\\.bam", "", colnames(countTable))
   rownames(countTable) = countTable$gene_id
   countTable[, IDs]
   
@@ -428,7 +430,7 @@ CEL_metaData %>%
   dplyr::select(c(name, raw_reads, 
                   cutadapt_out:cutadapt_out_perc, 
                   filt_reads, filt_reads_perc)) %>%
-  rename("sample name" = name) %>%
+  dplyr::rename("sample name" = name) %>%
   datatable(options = list(
     initComplete = JS(
       "function(settings, json) {",
@@ -442,8 +444,7 @@ CEL_metaData %>%
   colnames = gsub("_", "\n", colnames(.)),
   filter = "top",
   caption = "RNA-Seq processing from raw reads to ribosomal contamination")
-
-
+ 
 ```
 
 * For each sample about 40 million reads were sequenced  
@@ -456,7 +457,7 @@ CEL_metaData %>%
 CEL_metaData %>% 
   dplyr::select(c(name, filt_reads, 
                   STAR_out:assigned_perc)) %>% 
-  rename("sample name" = name) %>%
+  dplyr::rename("sample name" = name) %>%
   datatable(options = list(
     initComplete = JS(
       "function(settings, json) {",
@@ -578,7 +579,6 @@ plotKmeans <- function(data) {
 }
 
 ```
-
 
 ### PCA Plots
 
@@ -725,7 +725,7 @@ assignedPercMedianPlot <- ggplot(pcaData, aes(PC1, PC2, color = above_median, sh
 
 # Create a box plot of assigned_perc with different groups
 assignePercboxPlot <- ggplot(pcaData, aes(x = factor(condition), y = assigned_perc)) +
-  geom_boxplot(fill = "lightblue", color = "black", outlier.shape = NA, utlier.colour = "red",
+  geom_boxplot(fill = "lightblue", color = "black", outlier.shape = NA,
                outlier.size = 3) +
   geom_jitter(
     color = "darkblue",
@@ -739,6 +739,8 @@ assignePercboxPlot <- ggplot(pcaData, aes(x = factor(condition), y = assigned_pe
 
 # Creating PCA plots
 plot_grid(assignedPercPCAPlot, assignedPercMedianPlot, assignePercboxPlot, ncol=2,  nrow=2, align="h")
+
+write.csv(pcaData, "meta_data\\Bern_Smaples_PCA_Meta_Data.csv", row.names=FALSE)
 
 ```
 

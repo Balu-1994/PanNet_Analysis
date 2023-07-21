@@ -1,0 +1,714 @@
+---
+title: "RNASeq count data collection"
+date: "__`r lubridate::today()`__"
+output: 
+  html_document:
+    number_sections: true
+    code_folding: hide
+    toc: true
+    toc_depth: 1
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(tidyverse)
+library(DESeq2)
+library(readr)
+library(dplyr)
+library(RColorBrewer)
+library(ggplot2)
+library(gplots)
+library(biomaRt)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(tibble)
+library(stringr)
+library(ggrepel)
+library(cowplot)
+library(sva)
+library(MatrixGenerics)
+library(viridisLite)
+
+expression_dir = "C:/Users/br23n469/Desktop/PanNet_RNASeq_Analysis"
+```
+
+# Aim 
+
+Collection of all available RNA-Seq data sets. 
+
+# Loading Data 
+
+## Bern 2023 
+
+* Data from the lab samples.
+* 25 samples.
+
+### Genome 
+
+* GRCh38 with Ensembl 70
+
+### Mapping and quantification
+
+* STAR
+
+### Available files
+
+* `subreadcounts.txt.summary`
+* `subreadcounts.txt`
+
+```{r read Bern RNA-seq}
+
+# Read the data and perform the required operations
+Bern_Raw_Data <- read_delim("processed_data/results_reverse/subreadcounts.txt",
+                            skip = 1,
+                            show_col_types = FALSE) %>% 
+  setNames(gsub("_", ".", names(.))) %>% 
+  dplyr::rename(gene_id = Geneid) %>%
+  dplyr::select(-c(2:6)) %>%
+  rename_with(~ gsub("\\.bam", "", .), everything()) %>%
+  mutate(gene_id = str_trim(gene_id)) %>%
+  as.data.frame()
+
+# removing the version numbers from the gene ids
+Bern_Raw_Data$gene_id = gsub("\\.[0-9]*$", "" , Bern_Raw_Data$gene_id)
+
+# Read the CSV file "Scarpa_2017_meta_data.csv" into the data frame Scarpa_Meta_Data
+Bern_Meta_Data <- read.table("meta_data/Bern_Smaples_Meta_Data.csv", header = TRUE, sep = ",")
+
+# Create a character vector containing the names of the columns to be extracted from Scarpa_Meta_Data
+Bern_Columns <- c("name", "Organ", "WHO.2017", "WHO.2017.code", "Daxx.AtrxTMA11.18", "Geschlecht")
+
+# Extract only the columns specified in Scarpa_Columns from Scarpa_Meta_Data and assign it back to Scarpa_Meta_Data
+Bern_Meta_Data <- Bern_Meta_Data[, Bern_Columns]
+
+Bern_Meta_Data <- Bern_Meta_Data %>% 
+  dplyr::rename(Sample_Name = name, Tissue_Type = Organ, Gender = Geschlecht, 
+         DAXX_ATRX = Daxx.AtrxTMA11.18, Grade = WHO.2017.code, WHO_2017 = WHO.2017) %>%
+  mutate(Data_Set="Bern")
+
+```
+
+## Scarpa 2017
+
+* Published in [Scarpa, 2017](https://doi.org/10.1038/nature21063).
+* Raw data available from `EGAS00001001732`.
+* 21 samples.
+
+### Genome 
+
+* GRCh37 with Ensembl 70
+
+### Mapping and quantification
+
+* RSEM
+
+The methods section does not specify the mapping algorithm. The default algorithm is `Bowtie`
+
+### Available files 
+
+* `Scarpa_2017_GRCh37_Ensembl75_RSEM_raw.csv`
+* `Scarpa_2017_GRCh37_Ensembl75_RSEM_TMM.csv`
+* `Scarpa_2017_GRCh37_Ensembl75_RSEM_vst.csv`
+* `Scarpa_2017_meta_data.csv`
+
+```{r read Scarpa RNA-seq}
+
+# Read Scarpa_2017_GRCh37_Ensembl75_RSEM_raw.csv raw data using read.table()
+Scarpa_Raw_Data <- read.table("Scarpa_2017/Scarpa_2017_GRCh37_Ensembl75_RSEM_raw.csv", header = TRUE, sep = ",") %>%
+  mutate(gene_id = str_trim(gene_id)) 
+
+
+# Read the CSV file "Scarpa_2017_meta_data.csv" into the data frame Scarpa_Meta_Data
+Scarpa_Meta_Data <- read.table("Scarpa_2017/Scarpa_2017_meta_data.csv", header = TRUE, sep = ",")
+
+# Create a character vector containing the names of the columns to be extracted from Scarpa_Meta_Data
+Scarpa_Columns <- c("Sample_Name", "Tissue_Type", "Data_Set", "MEN1", "DAXX_ATRX", "Grade", "Gender",
+                    "Group3_signature_re.classification")
+
+# Extract only the columns specified in Scarpa_Columns from Scarpa_Meta_Data and assign it back to Scarpa_Meta_Data
+Scarpa_Meta_Data <- Scarpa_Meta_Data[, Scarpa_Columns]
+
+```
+
+## Chan 2018
+
+* Published in [Chan, 2018](https://doi.org/10.1038/s41467-018-06498-2)
+* Raw data available from `GSE118014`
+* 21 samples 
+
+### GENOME
+
+* GRCh37 with Ensembl 70
+
+### Mapping and quantification  
+
+* STAR + RSEM
+
+### Available files 
+
+* `Chan_2018_GRCh37_Ensembl75_RSEM_raw.csv`
+* `Chan_2018_GRCh37_Ensembl75_RSEM_TMM.csv`
+* `Chan_2018_GRCh37_Ensembl75_RSEM_vst.csv`
+* `Chan_2018_meta_data.csv`
+
+```{r read Chan RNA-seq}
+
+# Read Chan_2018_GRCh37_Ensembl75_RSEM_raw.csv raw data using read.table()
+Chan_Raw_Data <- read.table("Chan_2018/Chan_2018_GRCh37_Ensembl75_RSEM_raw.csv", header = TRUE, sep = ",") %>%
+  mutate(gene_id = str_trim(gene_id))
+
+# Read the CSV file "Chan_2018_meta_data.csv" into the data frame Chan_Meta_Data
+Chan_Meta_Data <- read.table("Chan_2018/Chan_2018_meta_data.csv", header = TRUE, sep = ",")
+
+# Create a character vector containing the names of the columns to be extracted from Chan_Meta_Data
+Chan_Columns <- c("Sample_Name", "Tissue_Type", "Data_Set", "MEN1", "DAXX_ATRX", "Grade", "Gender",
+                  "Group3_signature_re.classification")
+
+# Extract only the columns specified in Scarpa_Columns from Chan_Meta_Data and assign it back to Chan_Meta_Data
+Chan_Meta_Data <- Chan_Meta_Data[, Chan_Columns]
+
+# Read 221004_PanNET_methylation_annotation_DiDomenico_full.txt raw data using read.table()
+DiDomenico_Mete_data <- read.delim("221004_PanNET_methylation_annotation_DiDomenico_full.txt", 
+                                                  header = TRUE) %>% as.data.frame()
+
+# Create a character vector containing the names of the columns to be extracted from Scarpa_Meta_Data
+DiDomenico_Columns <- c("Sample_Name", "MEN1", "DAXX_ATRX", "Grade")
+
+# Extract the specified columns from DiDomenico_Meta_data
+DiDomenico_Mete_data <- DiDomenico_Mete_data[, DiDomenico_Columns]
+
+# Filter DiDomenico_Meta_data to keep only rows whose Sample_Name is present in Chan_Meta_Data's Sample_Name column
+DiDomenico_Mete_data <- DiDomenico_Mete_data[DiDomenico_Mete_data$Sample_Name %in% Chan_Meta_Data$Sample_Name, ]
+
+# Mutate the Grade column in Chan_Meta_Data with G1 and G2
+Chan_Meta_Data <- Chan_Meta_Data %>% 
+  mutate(Grade = case_when(Chan_Meta_Data$Sample_Name == DiDomenico_Mete_data$Sample_Name ~ DiDomenico_Mete_data$Grade,
+                           TRUE ~ Grade))
+```
+
+## Alvarez 2018
+
+* Published in [Chan, 2018](https://doi.org/10.1038/s41467-018-06498-2)
+* Raw data available from `GSE118014`
+* We have 212 samples.
+
+### GENOME
+
+* Hg19
+
+### Mapping and quantification  
+
+* Bowtie
+
+### Available files 
+* Here we have matrix files for each genes so need to merge all the data into a file.
+* Filter the data to only include rows with origin = `pancreas` and type = `primary`.
+* After filtering, we only have the count of unique values = `83`
+* In this data, we initially have the `ENTREZ IDs` of the genes, and to obtain the corresponding `ENSEMBL IDs`, we perform mapping using the `org.Hs.eg.db` package. If the ENSEMBL ID is null (not available), we remove those rows from the data to ensure we only retain rows with valid ENSEMBL IDs.
+
+```{r read Alvarez RNA-seq, message=F}
+
+# loading the reference RNA-Seq profiles
+Alvarez.files <- list.files("Alvarez_2018/", "counts.txt.gz")
+
+# Read each file in 'Alvarez.files' and store the data in a list
+Alvarez.list <- lapply(Alvarez.files, function(x) read_delim(paste0("Alvarez_2018/", x), delim = "\t", 
+                                                             show_col_types = FALSE))
+
+# Combine the data from all files into one data frame 'Alvarez_Data'
+Alvarez_Data <- bind_cols(lapply(seq_along(Alvarez.list), function(x) if(x != 1) 
+  Alvarez.list[[x]][2] else Alvarez.list[[x]])) %>% as.data.frame()
+
+# Rename the columns based on the file names and use 'GeneID' as row names
+colnames(Alvarez_Data)[-1] <- sapply(Alvarez.files, function(x) str_split(x, pattern = "_")[[1]][2])
+rownames(Alvarez_Data) <- Alvarez_Data$GeneID
+
+# Remove rows where the total count (sum of counts across samples) is zero
+Alvarez_Data <- Alvarez_Data[Matrix::rowSums(Alvarez_Data) != 0, ]
+
+# Loading the sample information
+Alvarez.colData <- read_delim("Alvarez_2018/GSE98894_series_matrix.txt.gz", delim = "\t", skip = 28, 
+                              n_max = 41, col_names = FALSE, show_col_types = FALSE) %>% 
+                  as.data.frame()
+
+# Clean up and format the sample information data frame 'Alvarez.colData'
+Alvarez.colData[1] <- gsub("\\!", "", Alvarez.colData[[1]])
+rownames(Alvarez.colData) <- make.unique(Alvarez.colData[[1]])
+Alvarez.colData <- as.data.frame(t(Alvarez.colData[,-1]))
+Alvarez.colData <- Alvarez.colData[,c(1,8,10:13)]
+colnames(Alvarez.colData) <- c("sample_name", "source", "type", "origin", "tumor_id", "patient_id")
+Alvarez.colData <- Alvarez.colData %>% mutate(across(everything(), ~ str_remove(.x, pattern = "^.*: ")))
+Alvarez.colData <- Alvarez.colData %>%
+  filter(origin == "pancreas" & type == "primary")
+
+# Select only the columns from 'Alvarez_Data' that match the sample names in 'Alvarez.colData'
+Alvarez_Raw_Data <- Alvarez_Data %>%
+  dplyr::select(Alvarez.colData$sample_name) %>%
+  as.data.frame()
+
+# Add the 'GeneID' column to 'Alvarez_Raw_Data' and rename it to 'ensembl_id'
+Alvarez_Raw_Data$NCBI_Entrez_id <- Alvarez_Data$GeneID
+
+# Map ENTREZ IDs to ENSEMBL IDs using 'org.Hs.eg.db'
+Alvarez_Raw_Data$gene_id <- suppressWarnings(mapIds(org.Hs.eg.db, keys = as.character(Alvarez_Raw_Data$NCBI_Entrez_id), 
+                                   keytype = "ENTREZID", column = "ENSEMBL"))
+
+# Filter out rows with NA values in the 'gene_id' column
+Alvarez_Raw_Data <- Alvarez_Raw_Data %>%
+  filter(!is.na(gene_id)) %>%
+  mutate(gene_id = str_trim(gene_id))
+
+# Step 1: Check if gene_id is unique
+is_unique_gene_id <- !duplicated(Alvarez_Raw_Data)
+
+if (all(is_unique_gene_id)) {
+  Alvarez_Raw_Data <- Alvarez_Raw_Data
+} else {
+  Alvarez_Raw_Data <- subset(Alvarez_Raw_Data, is_unique_gene_id)
+}
+# The 'Alvarez_Raw_Data' data frame now contains only rows where 'gene_id' is not NA.
+
+Alvarez_Meta_Data <- Alvarez.colData %>%
+  dplyr::select(Sample_Name = sample_name, Tissue_Type = type) 
+
+
+```
+
+## Integrating the Datasets
+
+```{r Integrating the Bern RNA-seq, Scarpa RNA-seq Chan RNA-seq and Alvarez RNA-seq}
+
+# Combine the datasets into a list
+datasets_list <- list(Bern_Raw_Data, Scarpa_Raw_Data, Chan_Raw_Data, Alvarez_Raw_Data)
+
+# Merge the datasets based on "gene_id" using Reduce() and inner_join()
+merged_RNA_Seq_Data <- Reduce(function(x, y) inner_join(x, y, by = c("gene_id"), suffix = c("", "_from_b")), datasets_list)
+
+# Remove duplicates in the "gene_id" column to keep only unique gene_ids
+merged_RNA_Seq_Data <- distinct(merged_RNA_Seq_Data, gene_id, .keep_all = TRUE) %>%
+  dplyr::select(!ends_with("from_b"))
+
+
+```
+
+* The resulting combined dataset will contain all the rows from all four datasets with matching gene_ids,
+ and duplicates will be removed to keep only unique gene_ids.
+ 
+* Total genes in the combined dataset = `r nrow(merged_RNA_Seq_Data)`
+
+# Data quality assessment
+
+```{r creating the Metadata, message=F}
+
+# Get the column names from merged_RNA_Seq_Data  as a character vector
+column_names <- colnames(merged_RNA_Seq_Data)
+
+# Define the names you want to exclude
+names_to_exclude <- c("gene_id", "gene_name", "NCBI_Entrez_id")
+
+# Create a new data frame with column names as rows using tibble()
+raw_meta_data <- tibble(sample_name = column_names)
+
+# Exclude rows where column_name contains any of the specified prefixes
+raw_meta_data <- raw_meta_data %>%
+  filter(!str_detect(sample_name, paste(names_to_exclude, collapse = "|"))) %>%
+  mutate(sample_location = case_when(
+    startsWith(sample_name, "T.") ~ "Bern",
+    startsWith(sample_name, "ICGC_") ~ "Scarpa",
+    startsWith(sample_name, "AC") ~ "Alvarez",
+    TRUE ~ "Chan"
+  ))
+
+# Convert 'condition' column to factor
+raw_meta_data$sample_location = factor(raw_meta_data$sample_location)
+
+merged_Data_filtered <- merged_RNA_Seq_Data %>%
+  dplyr::select(-starts_with("gene_name"), -starts_with("NCBI_Entrez_id"))
+
+merged_Data_filtered <- data.frame(merged_Data_filtered[,-1], row.names=merged_Data_filtered[,1])
+
+# Import as DESeqDataSet(dds)
+if (!exists("dds")){
+  dds <- DESeqDataSetFromMatrix(countData = merged_Data_filtered,
+                                colData = raw_meta_data,
+                                design = ~ 1)
+  
+  # Pre-filtering
+  keep <- rowSums(counts(dds)) >= 10
+  dds <- dds[keep, ]
+}
+
+```
+* This creates a DESeqDataSet object from count data and sample metadata.
+* It performs pre-filtering by retaining only the genes with a count greater than or equal to 10.
+* After filtering `r sum(keep)` genes remaining.
+
+## Normalizing Data
+
+* Here we have used the 'vst' transformation functions to normalize the data
+
+```{r normalizing data}
+
+# Variance stabilizing transformation for data quality assessment
+vsd <- vst(dds, blind = FALSE)
+
+```
+
+## PCA Plots
+
+* Data - vst-normalized (`DESeq`) counts.
+* No scaling was done to data.
+* Top 500 most variable genes were taken from a list of 18749 genes.
+
+```{r pcaPlot, fig.height = 3.25, fig.width = 8, echo=TRUE}
+
+# Perform PCA on the `vsd` data with grouping by "condition" and "rep".
+pcaData <- plotPCA(vsd, intgroup = c("sample_location"), returnData = TRUE)
+
+# Read Bern sample PCA meta data raw data using read.table()
+Bern_Smaples_PCA_Data <- read.table("meta_data/Bern_Smaples_PCA_Meta_Data.csv", header = TRUE, sep = ",")
+
+Bern_Smaples_PCA_Data <- Bern_Smaples_PCA_Data %>%
+   dplyr::select(name, KmeanCluster)
+  
+pcaData <- left_join(pcaData, Bern_Smaples_PCA_Data, by = "name")
+
+# Retrieve the percentage of variance explained by each principal component
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+pcaPlot <- ggplot(pcaData, aes(PC1, PC2, color = sample_location, shape = sample_location)) + 
+  geom_point(size = 3)  +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme_classic() + labs(color = "Sample\nLocation", shape = "Sample\nLocation")
+
+
+kmeansPcaPlot <- ggplot(pcaData, aes(PC1, PC2, color = factor(pcaData$KmeanCluster))) + 
+  geom_point(size = 3)  +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme_classic() + labs(color="Kmean\nCluster")
+
+# Creating PCA plots
+plot_grid(pcaPlot, kmeansPcaPlot, ncol=2, nrow=1, align="h")
+
+```
+
+
+* In the PCA plot, two distinct groups are evident, indicating the need to correct the data for potential batch effects or confounding factors.
+* Additionally, we observed that the Bern samples clustered into two distinct groups, warranting further investigation and potential data correction to address underlying factors causing this separation.
+
+
+## Batch adjustment on RNA Seq count data
+
+* Data - Raw count data of genes.
+* Tool used - `ComBat_seq`.
+* It uses a negative binomial regression, to count data with batch indicators as explanatory variables to estimate batch     effects parameters and understand their impact.
+
+
+```{r Batch adjustment count data, message=F}
+
+adjusted_merged_Data_filtered <- ComBat_seq(as.matrix(merged_Data_filtered),
+                                            batch=as.character(raw_meta_data$sample_location), 
+                                            group=NULL)
+
+# Import as DESeqDataSet(dds)
+if (!exists("dds_adjusted")){
+  dds_adjusted <- DESeqDataSetFromMatrix(countData = adjusted_merged_Data_filtered,
+                                colData = raw_meta_data,
+                                design = ~ 1)
+  
+  # Pre-filtering
+  adjustedKeep <- rowSums(counts(dds_adjusted)) >= 10
+  dds_adjusted <- dds_adjusted[adjustedKeep, ]
+}
+
+```
+* This creates a `DESeqDataSet` object from the adjusted count data and sample metadata.
+* It performs pre-filtering by retaining only the genes with a count greater than or equal to 10.
+* After filtering `r sum(adjustedKeep)` genes remaining.
+
+
+### Normalization of Adjusted DESeq Data
+
+* Here we have used the 'vst' transformation functions to normalize the adjusted data
+
+```{r normalizing adjusted data}
+
+# Variance stabilizing transformation for data quality assessment
+vsd_adjusted <- vst(dds_adjusted, blind = FALSE)
+
+```
+
+### PCA Plots of Adjusted Data.
+
+* Data - vst-normalized (`DESeq`) adjusted data counts.
+* No scaling was done to data.
+* Top 500 most variable genes were taken from a list of `r sum(adjustedKeep)` genes.
+
+```{r pcaPlot adjusted data, fig.height = 3.25, fig.width = 8, echo=TRUE}
+
+# Perform PCA on the `vsd` data with grouping by "condition" and "rep".
+pcaData_adjusted <- plotPCA(vsd_adjusted, intgroup = c("sample_location"), returnData = TRUE)
+
+# Retrieve the percentage of variance explained by each principal component
+percentVar_adjusted <- round(100 * attr(pcaData_adjusted, "percentVar"))
+
+pcaData_adjusted <- left_join(pcaData_adjusted, Bern_Smaples_PCA_Data, by = "name")
+
+pcaPlot_adjusted <- ggplot(pcaData_adjusted, aes(PC1, PC2, color = sample_location, shape = sample_location)) + 
+  geom_point(size = 3)  +
+  xlab(paste0("PC1: ",percentVar_adjusted[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar_adjusted[2],"% variance")) + 
+  theme_classic() + labs(color = "Sample\nLocation", shape = "Sample\nLocation")
+  
+kmeansPCAPlot_adjusted <- ggplot(pcaData_adjusted, aes(PC1, PC2, color = factor(pcaData_adjusted$KmeanCluster))) + 
+  geom_point(size = 3)  +
+  xlab(paste0("PC1: ",percentVar_adjusted[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar_adjusted[2],"% variance")) + 
+  theme_classic() + labs(color="Kmean\nCluster")
+
+# Creating PCA plots
+plot_grid(pcaPlot_adjusted, kmeansPCAPlot_adjusted, ncol=2, nrow=1, align="h")
+
+```
+
+### Integration of Adjusted Data with Sample MetaData
+
+```{r combining meta data, fig.height = 3.25, fig.width = 8, echo=TRUE}
+
+Meta_Data_list <- list(Bern_Meta_Data, Scarpa_Meta_Data, Chan_Meta_Data, Alvarez_Meta_Data)
+
+Merged_Meta_Data <- Reduce(function(x, y) merge(x, y, all=TRUE), Meta_Data_list, accumulate=FALSE)
+
+Merged_Meta_Data <- Merged_Meta_Data %>%
+  dplyr::rename(name = Sample_Name) %>%
+  dplyr::arrange(Data_Set, .by_group = TRUE) %>%
+  dplyr::mutate(Gender = case_when(
+    Gender == "M" ~ "male",
+    Gender == "F" ~ "female",
+    TRUE ~ Gender
+  ),
+  DAXX_ATRX = case_when(
+    DAXX_ATRX == "wt" ~ "1",
+    DAXX_ATRX == "mut" ~ "0",
+    TRUE ~ DAXX_ATRX
+  ),
+  MEN1 = case_when(
+    MEN1 == "wt" ~ "1",
+    MEN1 == "mut" ~ "0",
+    TRUE ~ MEN1
+  ),
+  Grade = ifelse(grepl("^\\d+(\\.\\d+)?$", Grade), paste0("G", Grade), Grade)
+)
+
+pcaData_adjusted <- left_join(pcaData_adjusted, Merged_Meta_Data, by="name", suffix = c("", "_from_b")) %>%
+  dplyr::select(!ends_with("from_b")) 
+
+```
+
+### PCA Plots with Sample Metadata.
+
+```{r pcaPlot Sample Metadata adjusted data, fig.height = 6, fig.width = 8, echo=TRUE}
+
+genderpcaPlot <- ggplot(data=subset(pcaData_adjusted, !is.na(Gender)), 
+                        aes(PC1, PC2, color = Gender, shape = sample_location)) + 
+  geom_point(size = 3)  +
+  xlab(paste0("PC1: ",percentVar_adjusted[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar_adjusted[2],"% variance")) + 
+  theme_classic() + labs(shape = "Location")
+
+DAXX_ATRXpcaPlot <- pcaData_adjusted %>% 
+  dplyr::filter(sample_location != "Alvarez") %>%
+  ggplot(mapping = aes(PC1, PC2, color = DAXX_ATRX, shape = sample_location)) + 
+  geom_point(size = 3)  +
+  xlab(paste0("PC1: ",percentVar_adjusted[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar_adjusted[2],"% variance")) + 
+  theme_classic() + labs(color= "DAXX/ATRX", shape = "Location")
+
+MEN1pcaPlot <- pcaData_adjusted %>% 
+  dplyr::filter(sample_location != "Alvarez") %>%
+  ggplot(mapping = aes(PC1, PC2, color = MEN1, shape = sample_location)) + 
+  geom_point(size = 3)  +
+  xlab(paste0("PC1: ",percentVar_adjusted[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar_adjusted[2],"% variance")) + 
+  theme_classic() + labs(shape = "Location")
+
+gradepcaPlot <- ggplot(data=subset(pcaData_adjusted, !is.na(Grade)), aes(PC1, PC2, color = Grade, shape = sample_location)) +
+  geom_point(size = 3)  +
+  xlab(paste0("PC1: ",percentVar_adjusted[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar_adjusted[2],"% variance")) + 
+  theme_classic() + labs(shape = "Location")
+
+plot_grid(genderpcaPlot, DAXX_ATRXpcaPlot, MEN1pcaPlot, gradepcaPlot, ncol = 2, nrow = 2, align = "h") 
+
+
+```
+
+# Gene signatures 
+
+## Scarpa Group3
+
+```{r loading Scarpa genes}
+# The list from Scarpa is loaded from the project dealing with Nunzias paper
+# The list was modified to manually correct a typo in a gene name
+Scarpa_Group3 <- read_csv(file.path("meta_data/scarpa_group_3_signature_corrected.csv"), 
+                         show_col_types = F)[[1]]
+```
+
+* The Scarpa Group3 signature contains `r length(Scarpa_Group3)` genes.
+
+```{r Scarpa score, fig.height = 3.5, fig.width = 8, echo=TRUE}
+  
+ rankSignature <- function(norm_data, gene_sig, sig_name) {
+   
+  shared_genes <-  merged_RNA_Seq_Data %>%
+     filter(gene_name %in% gene_sig)
+  
+  # Select genes and convert rownames to gene name
+  norm_data = norm_data[shared_genes$gene_id, ]
+  rownames(norm_data) = plyr::mapvalues(rownames(norm_data), 
+                                        from = shared_genes$gene_id, 
+                                        to = shared_genes$gene_name)
+  
+  # Calculate ranks for each row (gene) separately
+  rank_data <- matrixStats::rowRanks(norm_data)
+  colnames(rank_data) <- colnames(norm_data)
+  rownames(rank_data) <- rownames(norm_data)
+  
+  # Calculate the sum of ranks for each sample (column)
+  sig_sums <- colSums(rank_data)
+  
+  # Create the data frame for the result using NSE with mutate()
+  sig_df <- data.frame(name = str_trim(names(sig_sums), side = "both"))
+  
+  # Dynamically create the new column with the desired column name using !! and :=
+  sig_df <- sig_df %>% mutate(!!sig_name := sig_sums)
+  
+  return(sig_df)
+ }
+
+Merged_Meta_Data = left_join(Merged_Meta_Data,
+                         rankSignature(assay(vsd_adjusted),
+                                      Scarpa_Group3,
+                                      "Scarpa_Group3"),
+                         by = "name",
+                         suffix = c(".old", "")) %>% 
+  dplyr::select(!ends_with("old"))
+
+pcaData_adjusted <- left_join(pcaData_adjusted, Merged_Meta_Data, by="name", suffix = c("", "_from_b")) %>%
+  dplyr::select(!ends_with("from_b"))
+
+
+signScrPcaPlot <- ggplot(pcaData_adjusted, aes(PC1, PC2, color = as.numeric(Scarpa_Group3), shape = sample_location)) +
+  geom_point(size = 3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  theme_classic() + labs(shape = "Location") + 
+  scale_color_viridis_c(option = "D", name = "Scarpa\nGroup3")
+  
+
+BernSignScrPcaPlot <- pcaData_adjusted %>% 
+  dplyr::filter(!sample_location %in% c("Alvarez", "Chan", "Scarpa")) %>%
+  ggplot(mapping = aes(PC1, PC2, color = as.numeric(Scarpa_Group3), shape = sample_location)) + 
+  geom_point(size = 3)  +
+  xlab(paste0("PC1: ",percentVar_adjusted[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar_adjusted[2],"% variance")) + 
+  scale_color_viridis_c(option = "D", name = "Scarpa\nGroup3") +
+  theme_classic() + labs(shape = "Location")
+
+# Creating PCA plots
+plot_grid(signScrPcaPlot, BernSignScrPcaPlot, ncol=2, nrow=1, align="h")
+  
+
+```
+
+## ADM3
+
+```{r load NDD signatures, fig.height = 3.5, fig.width = 8, echo=TRUE}
+# This are the signatures from the hypoxia papers 
+# They are not yet part of the supplemental tables but should be added 
+ADM3_genes = read_csv(file.path("meta_data/20210305_Genes_Corr_Progressive_Intersection.csv"), 
+                     show_col_types = F) %>% 
+  filter(NumberOfProbesSameCat > 1)
+
+Merged_Meta_Data = left_join(Merged_Meta_Data,
+                         rankSignature(assay(vsd_adjusted),
+                                      ADM3_genes$gene,
+                                      "ADM3"),
+                         by = "name",
+                         suffix = c(".old", "")) %>% 
+  dplyr::select(!ends_with("old"))
+
+pcaData_adjusted <- left_join(pcaData_adjusted, Merged_Meta_Data, by="name", suffix = c("", "_from_b")) %>%
+  dplyr::select(!ends_with("from_b"))
+
+signADM3PcaPlot <- ggplot(pcaData_adjusted, aes(PC1, PC2, color = as.numeric(ADM3), shape = sample_location)) +
+  geom_point(size = 3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  theme_classic() + 
+  scale_color_viridis_c(option = "D", name = "ADM3") +
+  labs(color = "ADM3") + labs(shape = "Location")
+
+
+BernSignADM3PcaPlot <- pcaData_adjusted %>% 
+  dplyr::filter(!sample_location %in% c("Alvarez", "Chan", "Scarpa")) %>%
+  ggplot(mapping = aes(PC1, PC2, color = as.numeric(ADM3), shape = sample_location)) + 
+  geom_point(size = 3)  +
+  xlab(paste0("PC1: ",percentVar_adjusted[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar_adjusted[2],"% variance")) + 
+  scale_color_viridis_c(option = "D", name = "ADM3") +
+  theme_classic() + labs(shape = "Location")
+
+# Creating PCA plots
+plot_grid(signADM3PcaPlot, BernSignADM3PcaPlot, ncol=2, nrow=1, align="h")
+
+```
+
+* The ADM3 Group3 signature contains `r length(ADM3_genes$gene)` genes.
+
+
+```{r load Scatter plot signature scores, fig.height = 6, fig.width = 8, echo=TRUE}
+
+group3SignPcaPlot <- ggplot(pcaData_adjusted, aes(PC1, PC2, color = `Group3_signature_re.classification`, shape = sample_location)) +
+  geom_point(size = 2) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  theme_classic() + 
+  labs(color = "ADM3") + labs(shape = "Location", color = "Group3\nRe.class")
+
+signScatterPlot <- ggplot(pcaData_adjusted, aes(x = Scarpa_Group3, y = ADM3)) +
+  geom_point(size = 2) +
+  geom_point(aes(color = factor(`Group3_signature_re.classification`))) +
+  labs(color = "Group3\nRe.class") + theme_classic() 
+
+signScatterPlot_rgLines <- ggplot(pcaData_adjusted, aes(x = Scarpa_Group3, y = ADM3)) +
+  geom_point(size = 2) +
+  geom_point(aes(color = factor(`Group3_signature_re.classification`))) +
+  labs(color = "Group3\nRe.class") + theme_classic() + 
+  geom_smooth(method = "lm", col = "#C42126", se = FALSE, size = 1)
+
+SignscatterPlot_NoAlvarez <- pcaData_adjusted %>% 
+  dplyr::filter(sample_location != "Alvarez") %>%
+  ggplot(mapping = aes(x = Scarpa_Group3, y = ADM3)) + 
+  geom_point(size = 2)  +
+  geom_point(aes(color = factor(`Group3_signature_re.classification`))) +
+  labs(color = "Group3\nRe.class") + theme_classic()
+
+
+# Creating PCA plots
+plot_grid(group3SignPcaPlot, signScatterPlot, signScatterPlot_rgLines, SignscatterPlot_NoAlvarez, ncol=2, nrow=2, align="h")
+
+```
+
+# Summary
+
+```{r session info}
+sessionInfo()
+```
+
+
+
+
