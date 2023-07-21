@@ -1,0 +1,1382 @@
+---
+title: "__230301 PanNET classifier tidymodels__"
+date: "__`r lubridate::today()`__"
+output: 
+  html_document:
+    number_sections: true
+    code_folding: hide
+    toc: true
+    toc_depth: 1
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(tidyverse)
+library(tidymodels)
+library(themis)
+library(vip)
+library(doParallel)
+library(tictoc)
+library(gridExtra)
+library(kableExtra)
+library(openxlsx)
+library(pheatmap)
+library(ggrepel)
+library(ggbeeswarm)
+
+source("/Bioinformatics/scripts/R/common_plotting_functions.R")
+
+metaDataDir = "/Bioinformatics/projects/shared_metadata"
+dataDir = "/Bioinformatics/raw_data/IDAT/R_data_objects"
+
+# Parallelization was used for tuning 
+# There are issues with memory when using doParallel to set up the parallel backend 
+# doFuture would be a better solution but I could not get it to actually run in multicore mode
+# if (sum(grepl("sockconn", showConnections()[, "class"])) == 0){
+#   parallel_backend = makePSOCKcluster(5)
+#   registerDoParallel(parallel_backend)
+# }
+```
+
+# Aim  
+
+A PanNET classifier was built by Marco Visano as part of his student project (`043_PanNET_classifier_student_project`). For this classifier feature selection was done unsupervised after training the random forest on all available probes.  
+
+Here, feature selection is performed on prior knowledge. The same DMPs used for consensus clustering are also used as features for training the model. The expectation is that using the same probes will increase the precision of classifier. Also, using a fixed set of probes allows splitting the available data into a training and test sample. 
+
+# Loading data  
+
+The 155 PanNET samples used to define the epigenetic groups are loaded as described in the `030_NETG1G2_EPIC` script `220609_NETG1G2_EPIC_consensus_clustering_plus_metastases`.  
+
+```{r loading sample sheet}
+# The old samples are identified by the NDD (Nunzia DiDomenico) prefix
+
+# In the default ChAMP pipeline loading the data is done via minfi::read.metharry.sheet
+# The sample sheet is part of the shared meta data 
+NDD_sampleSheet = read_delim(file.path(metaDataDir, 
+                                       "PanNET_methylation", 
+                                       "221004_PanNET_methylation_sample_sheet_full.txt"),
+                             delim = "\t",
+                             show_col_types = F,
+                             col_types = list(Slide = col_character()))
+# for all experiments Nunzia was loading all Chan samples and later discarded the metastasis samples
+# This is done here too because this has a small effect on the number of probes being imported
+NDD_sampleSheet = NDD_sampleSheet %>% 
+  filter(NDD_paper_Chan_157 | NDD_final_155)
+
+# The column Basename is used by minfi to specify the data location
+# The data location can be matched using the combination of Slide and Array
+NDD_sampleSheet$Sample_UID = paste0(NDD_sampleSheet$Slide, "_", NDD_sampleSheet$Array)
+
+# For the samples of 2022 I included a step to filter not processed data 
+# this is not done for the old NDD data because the sample sheets contain no such case
+```
+
+```{r adding meta data}
+# This is clinical and experimental data 
+# This information is stored in the shared meta data 
+NDD_annotation = read_delim(file.path(metaDataDir, 
+                                      "PanNET_methylation",
+                                      "221004_PanNET_methylation_annotation_DiDomenico_full.txt"),
+                            delim = "\t", 
+                            #col_types = list(Grade = col_character()),
+                            show_col_types = F) 
+
+NDD_sampleAndAnnotation = left_join(NDD_sampleSheet,
+                                    NDD_annotation %>% 
+                                      dplyr::select(c(Sample_Name, MEN1, DAXX_ATRX, Grade, 
+                                                      Group3_signature, CC_Epi_newLRO, 
+                                                      ConsClus_k4_UB_UCL_ICGC, ConsClus_k4_UB_UCL_ICGC_Chan,
+                                                      Cell_type_groups = `Cell-type.groups`, CNAGroups,
+                                                      MCT4_max, MCT4, Group3_signature)),
+                                    by = "Sample_Name",
+                                    suffix = c(".old", "")) %>% 
+  dplyr::select(-ends_with(".old")) %>% 
+  mutate(MCT4_max = tolower(MCT4_max)) # this should be fixed in the meta data table
+```
+
+```{r NDD metaData}
+# meta data excluding the metastasis samples in Chan 
+NDD_metaData = NDD_sampleAndAnnotation %>% 
+  filter(!(Sample_Name %in%
+             c("A_MK12","AM1_MK53","D_MK26","D_MK34","D_MK42","D_MK51","DM1_LS7","DM1_MK44","WT_LS35"))) %>% 
+  mutate(Sample_Group = gsub("WT", "wt", Sample_Group)) 
+```
+
+```{r normalizing data, eval = F}
+if (!exists("NDD_norm")){
+  data.file = "030_220201_NETG1G2_EPIC_consensus_clustering_DiDomenico_norm.Rds"
+  
+  if (file.exists(file.path(dataDir, 
+                            data.file))){
+    message("using saved normalized data")
+    NDD_norm = readRDS(file.path(dataDir, 
+                                 data.file))
+  } else{
+    warning("A file with the existing normalized data is required")
+  } 
+} else
+  message("using normalized data from current environment")
+
+# Check if loaded and processed data agree
+stopifnot(all.equal(NDD_metaData$Sample_Name, colnames(NDD_norm)))
+```
+
+<!-- The ComBat corrected data is not used because of the potential for data leakage in cross evaluation -->
+
+```{r NDD combat batch correction, eval = F}
+# This is the batch correction for the 155 samples used by Nunzia
+# It is included here to be able to show the consensus clustering before addition of the new samples
+# NDD did use Combat to correct for Slide effects 
+# The protected effect is the DAXX_ATRX status (wt vs mut)
+if (!exists("NDD_ComBat")){
+  data.file = "030_220201_NETG1G2_EPIC_consensus_clustering_DiDomenico_ComBat.Rds"
+  useSavedData = T
+  if (file.exists(file.path(dataDir, 
+                            data.file))){
+    message("using saved ComBat data")
+    NDD_ComBat = readRDS(file.path(dataDir, 
+                                   data.file))
+  } else{
+    warning("A file with the existing ComBat data is required")
+  } 
+} else
+  message("using ComBat data from current environment")
+
+stopifnot(all.equal(NDD_metaData$Sample_Name, colnames(NDD_ComBat)))
+```
+
+```{r differentially methylated probes, eval = F}
+# The consensus clustering is done on the differentially methylated probes 
+# These probes are derived by testing the groups from the phylogenetic tree 
+NDD_DMPs = list(alpha_v_beta = 
+                  read.xlsx(file.path(metaDataDir,
+                                      "PanNET_methylation/published_tables",
+                                      "DiDomenico_2020_T6_alpha_like_v_beta_like.xlsx"), 
+                            startRow = 2),
+                alpha_v_intermediate = 
+                  read.xlsx(file.path(metaDataDir,
+                                      "PanNET_methylation/published_tables",
+                                      "DiDomenico_2020_T7_alpha_like_v_intermediate.xlsx"),
+                            startRow = 2),
+                intermediate_v_beta = 
+                  read.xlsx(file.path(metaDataDir,
+                                      "PanNET_methylation/published_tables",
+                                      "DiDomenico_2020_T8_intermediate_v_beta_like.xlsx"),
+                            startRow = 2))
+NDD_DMPs_unique = unique(unlist(sapply(NDD_DMPs, function(x) x[[1]])))
+
+```
+
+# General parameters  
+
+## Data set 
+
+Analogous to the classifier trained by Marco, all 155 samples will be used as a training set. Model performance will then be evaluated using cross validation. The samples of the NETG1G2 cohort will be used as an independent testing group.  
+
+__It needs to be noted that the new testing data will be based on the EPIC technology.__ The training data does contain only few samples using the EPIC technology. Therefore, technical differences may impact model performance. However, all samples to be added to the classifier are expected to be based on EPIC.  
+
+In the classifier trained by Marco training was performed on the ComBat corrected data. The same data was used for cross validation which constitutes a potential data leak leading to overestimated model performance. Due to the low number of EPIC samples it is not possible to reliably perform ComBat batch correction in the cross validation folds. __Therefore, all training is performed on the normalized but not batch corrected data.__ This will allow a more realistic evaluation of model performance.  
+
+In the initial analysis the only technical variable associated with the data was the array position. It would be possible to use this correction as part of cross validation.  
+
+```{r training data}
+# As described, the normalized data is used for training 
+
+# The tidymodels input is a tibble with the class labels as a column
+if (!file.exists("processed_data/230301_NDD_TD.Rds")){
+  NDD_TD = t(NDD_norm[intersect(NDD_DMPs_unique, rownames(NDD_norm)), ]) %>% 
+    as.data.frame() %>% 
+    rownames_to_column("Sample_Name") %>% 
+    as_tibble()
+  
+  NDD_TD = left_join(NDD_TD, 
+                     NDD_metaData %>% 
+                       dplyr::select(Sample_Name, 
+                                     CC_Epi_newLRO),
+                     by = "Sample_Name") 
+} else
+  NDD_TD = readRDS("processed_data/230308_NDD_training_data.Rds")
+
+```
+
+## Feature selection  
+
+In [Capper 2018](https://doi.org/10.1038/nature26000) feature selection was performed based on the random forest importance. __In this workflow feature selection is performed outside of cross validation.__ This means that there is data leakage between test and training data in the cross validation leading to overoptimistic model estimates.  
+
+The same approach was taken by Marco potentially explaining the reduced precision when predicting the NETG1G2 data compared to cross validation.  
+
+As an alternative it is possible to select the same probes that were used for consensus clustering. __This still presents a case of data leakage during cross validation, because probe selection is done once at the start of training.__ However, the probes are not selected directly on the data set but only the 125 samples from [Di Domenico 2020](https://doi.org/10.1038/s42003-020-01479-y). This partially mitigates the issue of overconfidence.  
+
+To reduce redundancy in the data, highly correlated probes (Pearson's rho > 0.8) can be removed. While correlated probes are not problematic for random forest classifierts, they pose serious problems for other machine learning models. In a random forest model correlated features will split the feature importance measure, potentially excluding relevant probes. This mainly is important when performing feature selection based on the intrinsic random forest importance measure.  
+
+## Feature engineering  
+
+The methylation data is already normalized and no further feature engineering is required.  
+
+To combat the class imbalance, the minority classes are over sampled to match the largest class.  
+
+<!-- The use of juice() is superseeded by bake(new_data = NULL) -->
+
+```{r data recipes}
+# recipes used for data processing 
+# Training the decorrelation takes quite a while 
+if (!exists("NDD_recipes")){
+  NDD_recipes = list(
+    DMP_all = NDD_TD %>% 
+      recipe(CC_Epi_newLRO ~ .) %>% 
+      update_role(Sample_Name, new_role = "UID") %>% 
+      step_upsample(CC_Epi_newLRO,
+                    over_ratio = 1,
+                    seed = 1631) %>% 
+      prep(),
+    DMP_decor = NDD_TD %>% 
+      recipe(CC_Epi_newLRO ~ .) %>% 
+      update_role(Sample_Name, new_role = "UID") %>% 
+      step_upsample(CC_Epi_newLRO,
+                    over_ratio = 1,
+                    seed = 1631) %>% 
+      step_corr(all_predictors(), 
+                threshold = 0.8) %>% 
+      prep()
+  )
+}
+```
+
+## Cross validation 
+
+Cross validation is performed to evaluate model performance and tune model hyperparameters.
+
+* 155 samples 
+* Outer: 4 fold cross validation (5 repetitions)
+* Inner: 5 bootstraps
+
+```{r generate sampling strategy }
+# The resampler will merge classes smaller than 10% of the total size 
+# For this reason some of the cv splits or bootstraps may not contain all groups in the training data
+set.seed(1618)
+NDD_TDfolds = nested_cv(NDD_TD,
+                        outside = vfold_cv(v = 4, 
+                                           repeats = 5,
+                                           strata = CC_Epi_newLRO),
+                        inside = bootstraps(time = 5,
+                                            strata = CC_Epi_newLRO))
+
+# For the final model evaluation only the outer CV is used 
+# I was not able to extract this directly from the nested_cv object
+set.seed(1618)
+NDD_TDouterFolds = vfold_cv(NDD_TD,
+                            v = 4, 
+                            repeats = 5, 
+                            strata = CC_Epi_newLRO)
+```
+
+## Metrics  
+
+The model performance can be scored using different summary statistics. 
+
+* Accuracy: Fraction of samples assigned the correct class
+
+# Random forest 
+
+Parameter tuning  
+
+* `n_tree` (100 : 1300, 7 steps)
+* `mtry` (50 : 100, 3 steps)
+
+For `mtry` there is an default value of $\sqrt{n\_probes}$. The search space is arranged symmetrically around this value.  
+
+<!-- Tuning the full set of parameters on the DMP data takes up to 1h (depending on the cost of the pre-processing) -->
+
+```{r rf tuning function}
+# this function is applied to each cv fold 
+# Parallelization is over the bootstrap samples  
+# This is not optimal because there are move cv folds than bootstraps giving the cvs more potential for parallization
+# It's also possible to parallelize over everything - this means that pre-processing is run for each tuning parameter combination. 
+# In the end the cost of pre-processing is too big to make this worthwhile
+tune_rf = function(object, wf, tg){
+  wf %>% 
+    tune_grid(object, 
+              grid = tg,
+              control = control_grid(parallel_over = "resamples",
+                                     verbose = T))
+  
+}
+```
+
+## All DMPs - ranger 
+
+The `ranger` random forest implementation is run including all DMPs.  
+
+```{r DMP all ranger}
+ranger_model = rand_forest(mode = "classification",
+                           trees = tune(),
+                           mtry = tune()) %>% 
+  set_engine("ranger")
+
+ranger_grid = grid_regular(trees(c(100, 1300)),
+                           mtry(c(50, 200)),
+                           levels = 7,
+                           filter = mtry < 101)
+
+DMP_all_ranger = workflow() %>% 
+  add_model(ranger_model) %>% 
+  add_recipe(NDD_recipes$DMP_all)
+
+if (!exists("DMP_all_ranger_tune")){
+  if (!file.exists("processed_data/230301_DMP_all_ranger_tune.Rds")){
+    tic()
+    set.seed(1648)
+    DMP_all_ranger_tune = map(NDD_TDfolds$inner_resamples, 
+                              tune_rf,
+                              wf = DMP_all_ranger,
+                              tg = ranger_grid)
+    toc()
+    
+    tmp = DMP_all_ranger_tune
+    
+    DMP_all_ranger_tune = list(
+      summarized = bind_rows(map(DMP_all_ranger_tune, 
+                                 collect_metrics, 
+                                 summarize = T)),
+      full = bind_rows(map(DMP_all_ranger_tune, 
+                           collect_metrics, 
+                           summarize = F)),
+      warnings = bind_rows(lapply(seq_along(DMP_all_ranger_tune), 
+                                  function(x){ tmp[[x]] %>% 
+                                      dplyr::select(id, .notes) %>% 
+                                      unnest(.notes) %>% 
+                                      mutate(fold = x)})))
+    
+    saveRDS(DMP_all_ranger_tune, "processed_data/230301_DMP_all_ranger_tune.Rds")
+  } else
+    DMP_all_ranger_tune = readRDS("processed_data/230301_DMP_all_ranger_tune.Rds")
+}
+```
+
+### ROC AUC  
+
+Grey dots indicate the estimates from individual bootstraps. In red the averages of the cross validation folds are shown and the blue dot indicates the mean over all replicates.  
+
+```{r DMP_all roc_auc, fig.height = 8, fig.width = 8}
+plotTuneRandForest = function(tuning_result,
+                              metric_to_show = "roc_auc"){
+  boot_res = tuning_result$full %>% 
+    filter(.metric == metric_to_show) %>% 
+    mutate(trees = as.factor(trees))
+  cv_res = tuning_result$summarized %>% 
+    filter(.metric == metric_to_show) %>% 
+    mutate(trees = as.factor(trees),
+           .estimate = mean)
+  cv_mean = cv_res %>% 
+    group_by(mtry, trees) %>% 
+    summarize(.estimate = mean(.estimate),
+              .groups = "drop")
+  
+  overall_best = cv_mean %>% 
+    group_by(mtry) %>% 
+    filter(.estimate == max(.estimate))
+  
+  best_model = setNames(paste0("mtry: ", overall_best$mtry, " - best ", metric_to_show, ": ", 
+                               round(overall_best$.estimate, digits = 3),
+                               " with ", overall_best$trees, " trees"),
+                        nm = overall_best$mtry)
+  
+  ggplot(boot_res, 
+         aes(x = trees,
+             y = .estimate)) + 
+    geom_beeswarm(alpha = 0.1) +
+    geom_beeswarm(data = cv_res,
+                  color = "red", 
+                  alpha = 0.5) + 
+    geom_point(data = cv_mean,
+               color = "blue") + 
+    geom_text(aes(label = round(.estimate, digits = 3)),
+              data = cv_mean, 
+              nudge_x = 0.3) + 
+    theme_classic() + 
+    facet_wrap(~ mtry, 
+               ncol = 1, 
+               labeller = labeller(mtry = best_model))
+}
+
+plotTuneRandForest(DMP_all_ranger_tune)
+```
+
+* The tuning parameters have very limited impact on model performance
+
+### Accuracy
+
+Grey dots indicate the estimates from individual bootstraps. In red the averages of the cross validation folds are shown and the blue dot indicates the mean over all replicates.  
+
+```{r DMP_all accuracy, fig.height = 8, fig.width = 8}
+plotTuneRandForest(DMP_all_ranger_tune,
+                   metric_to_show = "accuracy")
+```
+
+* Also tuning does not improve on accuracy 
+
+__Based on the model tuning the *mtry* is set to 75 and *n_trees* to 500.__
+
+## Decorrelated DMPs - ranger
+
+The `ranger` random forest implementation is run on the DMPs after removing highly correlated (pearson's rho > 0.8) probes. This increases the reliability of the estimates of probe importance that are split across highly correlated signal.  
+
+```{r DMP decor ranger}
+DMP_dcor_ranger = workflow() %>% 
+  add_model(ranger_model) %>% 
+  add_recipe(NDD_recipes$DMP_decor)
+
+if (!exists("DMP_dcor_ranger_tune")){
+  if (!file.exists("processed_data/230301_DMP_decor_ranger_tune.Rds")){
+    tic()
+    set.seed(1648)
+    DMP_dcor_ranger_tune = map(NDD_TDfolds$inner_resamples, 
+                               tune_rf,
+                               wf = DMP_dcor_ranger,
+                               tg = ranger_grid)
+    toc()
+    
+    DMP_dcor_ranger_tune = list(
+      summarized = bind_rows(map(DMP_dcor_ranger_tune, 
+                                 collect_metrics, 
+                                 summarize = T)),
+      full = bind_rows(map(DMP_dcor_ranger_tune, 
+                           collect_metrics, 
+                           summarize = F)),
+      warnings = bind_rows(lapply(seq_along(tmp), 
+                                  function(x){ tmp[[x]] %>% 
+                                      dplyr::select(id, .notes) %>% 
+                                      unnest(.notes) %>% 
+                                      mutate(fold = x)})))
+    
+    saveRDS(DMP_dcor_ranger_tune, "processed_data/230301_DMP_decor_ranger_tune.Rds")
+  } else
+    DMP_dcor_ranger_tune = readRDS("processed_data/230301_DMP_decor_ranger_tune.Rds")
+}
+```
+
+### ROC AUC  
+
+Grey dots indicate the estimates from individual bootstraps. In red the averages of the cross validation folds are shown and the blue dot indicates the mean over all replicates.  
+
+```{r DMP_dcor roc_auc, fig.height = 8, fig.width = 8}
+plotTuneRandForest(DMP_dcor_ranger_tune)
+```
+
+* Similar to the tuning including all probes the hyperparameters have little impact on model performance
+* The overall model performance is slightly reduced  
+
+### Accuracy
+
+Grey dots indicate the estimates from individual bootstraps. In red the averages of the cross validation folds are shown and the blue dot indicates the mean over all replicates.  
+
+```{r DMP_dcor accuracy, fig.height = 8, fig.width = 8}
+plotTuneRandForest(DMP_dcor_ranger_tune,
+                   metric_to_show = "accuracy")
+```
+
+* Also for accuracy the drop in performance is visible.  
+
+__While improving interpretability of the probe importance scores, removing highly correlated probes does remove signal from the data.__ This seems to negatively impact model performance. Therefore the model including all DMPs is used over the filtered model.  
+
+## All DMPs - randomForest
+
+A second implementation of random forests in the `randomForest` package is used on all DMPs.  
+
+```{r DMP all rf}
+rf_model = rand_forest(mode = "classification",
+                       trees = tune(),
+                       mtry = tune()) %>% 
+  set_engine("randomForest")
+
+rf_grid = grid_regular(trees(c(300, 900)),
+                       mtry(c(50, 125)),
+                       levels = 4,
+                       filter = mtry < 101)
+
+DMP_all_rf = workflow() %>% 
+  add_model(rf_model) %>% 
+  add_recipe(NDD_recipes$DMP_all)
+
+if (!exists("DMP_all_rf_tune")){
+  if (!file.exists("processed_data/230301_DMP_all_rf_tune.Rds")){
+    tic()
+    set.seed(1648)
+    DMP_all_rf_tune = map(NDD_TDfolds$inner_resamples, 
+                          tune_rf,
+                          wf = DMP_all_rf,
+                          tg = rf_grid)
+    toc()
+    
+    DMP_all_rf_tune = list(
+      summarized = bind_rows(map(DMP_all_rf_tune, 
+                                 collect_metrics, 
+                                 summarize = T)),
+      full = bind_rows(map(DMP_all_rf_tune, 
+                           collect_metrics, 
+                           summarize = F)),
+      warnings = bind_rows(lapply(seq_along(DMP_all_rf_tune), 
+                                  function(x){ tmp[[x]] %>% 
+                                      dplyr::select(id, .notes) %>% 
+                                      unnest(.notes) %>% 
+                                      mutate(fold = x)})))
+    
+    saveRDS(DMP_all_rf_tune, "processed_data/230301_DMP_all_rf_tune.Rds")
+  } else
+    DMP_all_rf_tune = readRDS("processed_data/230301_DMP_all_rf_tune.Rds")
+}
+```
+
+### ROC AUC  
+
+Grey dots indicate the estimates from individual bootstraps. In red the averages of the cross validation folds are shown and the blue dot indicates the mean over all replicates.  
+
+```{r DMP_all rf roc_auc, fig.height = 8, fig.width = 6}
+plotTuneRandForest(DMP_all_rf_tune)
+```
+
+* Performance is very similar to the `ranger` model
+
+### ROC AUC  
+
+Grey dots indicate the estimates from individual bootstraps. In red the averages of the cross validation folds are shown and the blue dot indicates the mean over all replicates.  
+
+```{r DMP_all rf accuracy, fig.height = 8, fig.width = 6}
+plotTuneRandForest(DMP_all_rf_tune,
+                   metric_to_show = "accuracy")
+```
+
+* Performance is very similar to the `ranger` model
+
+__The *randomForest* implementation is markedly slower than *ranger*.__ Therefore `ranger` will be used for further evaluations.  
+
+# Model evaluation  
+
+After tuning hyperparameters, the model performance is evaluated using the outer cross validation folds. More detailed statistics are collected to identify sources of error in the model.  
+
+* 4 fold cross validation (5 repetitions)
+* mtry: 75
+* n_trees: 500
+
+```{r fit tuned cross validation}
+# In addition to the model predictions the probe importance is saved 
+# Despite the correlation this may help identify probes of interest
+getProbeEstimates <- function(x) {
+  x %>% 
+    extract_fit_parsnip() %>% 
+    vip::vi()
+}
+
+if (!exists("DMP_all_ranger_cv")){
+  DMP_all_ranger_cv = 
+    workflow() %>% 
+    add_model(set_engine(ranger_model,
+                         "ranger", 
+                         importance = "impurity")) %>% 
+    add_recipe(NDD_recipes$DMP_all) %>% 
+    finalize_workflow(ranger_grid[10, ]) %>% 
+    fit_resamples(NDD_TDouterFolds,
+                  control = control_resamples(save_pred = T,
+                                              extract = getProbeEstimates))
+}
+```
+
+## Hard class performance metrics
+
+* accuracy: sensitive to class imbalances
+* kappa (kap): normalized accuracy, less sensitive to class imbalances
+* mcc: measure of association, less sensitive to class imbalances
+* sensitivity, recall, true positive rate: probability of correctly labeling a true positive
+* specificity, true negative rate: probability of correctly labeling a true negative
+* j_index, informedness: sensitivity + specificity - 1
+* balanced_accuracy: mean of sensitivity and specificity
+* precision: probability of true positives in the result
+* F_means: harmonic mean of precision and recall (sensitivity); by default precision and recall are weight equally
+
+Most of these metrics with the exception of the `accuracy`, `mcc` and `kap` are only defined for binary classifications. To extend these metrics to multiclass cases, the results can be averaged with and without weighting by class size (`macro` and `macro_weighted`). It is also possible to binarize all classifications into correctly classfied and wrongly classified (`micro`)
+
+Confidence intervals are calculated from the t-distribution with 4 degrees of freedom.
+
+<!-- The option to modify the beta value of f_meas is added as an example but not actually used  -->
+
+```{r hard class metrics}
+# This wrapper function allows setting the beta value of f_meas
+f_meas_beta = function(data, truth, estimate, na_rm = TRUE, ...) {
+  f_meas(
+    data = data,
+    truth = !! rlang::enquo(truth),
+    estimate = !! rlang::enquo(estimate),
+    # allows setting the beta value
+    beta = 1,
+    na_rm = na_rm,
+    ...
+  )
+}
+f_meas_beta = new_class_metric(f_meas_beta, direction = "maximize") 
+
+# These metrics measure the performance of classification
+hard_class_metrics = metric_set(accuracy, 
+                                mcc,
+                                kap,
+                                sens,
+                                spec,
+                                j_index, 
+                                bal_accuracy,
+                                precision, 
+                                f_meas_beta)
+```
+
+__Default averaging__  
+```{r cross validation macro}
+bind_rows(lapply(paste0("Repeat", 1:5),
+                 function(x){
+                   collect_predictions(DMP_all_ranger_cv)  %>% 
+                     filter(id == x) %>% 
+                     hard_class_metrics(truth = CC_Epi_newLRO, 
+                                        estimate = .pred_class,
+                                        estimator = "macro") %>% 
+                     mutate(id = x)
+                 })) %>% 
+  group_by(.metric) %>% 
+  summarize(.estimator = dplyr::first(.estimator),
+            mean = mean(.estimate),
+            sd = sd(.estimate)) %>% 
+  mutate(se = sd / sqrt(5),
+         CI_lower = mean - qt(0.025, df = 4, lower.tail = F) * se,
+         CI_upper = mean + qt(0.025, df = 4, lower.tail = F) * se) %>% 
+  mutate(across(where(is.numeric), ~ round(.x, digits = 3)), 
+         .metric = factor(.metric, levels = c("accuracy", 
+                                              "mcc",
+                                              "kap",
+                                              "sens",
+                                              "spec",
+                                              "j_index", 
+                                              "bal_accuracy",
+                                              "precision", 
+                                              "f_meas"))) %>% 
+  arrange(.metric) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = "striped",
+                full_width = F,
+                font_size = 10)
+```
+
+
+* The accuracy gives a higher estimate than the adjusted metrics mcc and kap
+* specificity is higher than sensitivity likely due to the class imbalances 
+* The imbalance is captured by the j_index but not the balanced accuracy
+* precision is higher than sensitivity
+
+__Weighted averaging__  
+```{r cross validation macro_weighted}
+bind_rows(lapply(paste0("Repeat", 1:5),
+                 function(x){
+                   collect_predictions(DMP_all_ranger_cv)  %>% 
+                     filter(id == x) %>% 
+                     hard_class_metrics(truth = CC_Epi_newLRO, 
+                                        estimate = .pred_class,
+                                        estimator = "macro_weighted") %>% 
+                     mutate(id = x)
+                 })) %>% 
+  group_by(.metric) %>% 
+  summarize(.estimator = dplyr::first(.estimator),
+            mean = mean(.estimate),
+            sd = sd(.estimate)) %>% 
+  mutate(se = sd / sqrt(5),
+         CI_lower = mean - qt(0.025, df = 4, lower.tail = F) * se,
+         CI_upper = mean + qt(0.025, df = 4, lower.tail = F) * se) %>% 
+  mutate(across(where(is.numeric), ~ round(.x, digits = 3)), 
+         .metric = factor(.metric, levels = c("accuracy", 
+                                              "mcc",
+                                              "kap",
+                                              "sens",
+                                              "spec",
+                                              "j_index", 
+                                              "bal_accuracy",
+                                              "precision", 
+                                              "f_meas"))) %>% 
+  arrange(.metric) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = "striped",
+                full_width = F,
+                font_size = 10)
+```
+
+* When using weighted averaging the sensitivity and accuracy are the same 
+* Specificity does decrease (likely because senitivity is highest in the smallest groups)
+
+## Soft classifcation metrics
+
+* roc_auc: How well does the metric (e.g. random forest score) separate the classes
+* pr_auc: are under the precision - recall curve
+* gain_capture: are under the maximal gain curve
+* mn_log_loss: modification of accuracy penalizing low confidence predictions
+
+For multclass scenarios roc_auc and pr_auc need to be summarized. For the roc_auc curve the `hand-till` procedure is insensitive to class imbalances.  
+
+```{r soft class metrics}
+# These metrics measure the performance of classification including the predicion score
+soft_class_metrics = metric_set(roc_auc,
+                                pr_auc,
+                                gain_capture,
+                                mn_log_loss)
+
+
+bind_rows(lapply(paste0("Repeat", 1:5),
+                 function(x){
+                   collect_predictions(DMP_all_ranger_cv)  %>% 
+                     filter(id == x) %>% 
+                     soft_class_metrics(truth = CC_Epi_newLRO, 
+                                        estimate = .pred_class,
+                                        .pred_Alpha_like : .pred_Intermediate_WT) %>% 
+                     mutate(id = x)
+                 })) %>% 
+  group_by(.metric) %>% 
+  summarize(.estimator = dplyr::first(.estimator),
+            mean = mean(.estimate),
+            sd = sd(.estimate)) %>% 
+  mutate(se = sd / sqrt(5),
+         CI_lower = mean - qt(0.025, df = 4, lower.tail = F) * se,
+         CI_upper = mean + qt(0.025, df = 4, lower.tail = F) * se) %>% 
+  mutate(across(where(is.numeric), ~ round(.x, digits = 3)), 
+         .metric = factor(.metric, levels = c("roc_auc", 
+                                              "pr_auc",
+                                              "gain_capture",
+                                              "mn_log_loss"))) %>% 
+  arrange(.metric) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = "striped",
+                full_width = F,
+                font_size = 10)
+```
+
+* As seen before the roc_auc always is very high
+* pr_auc is slightly lower as is the gain capture metric
+* The log loss is lower compared to Marco's classifier (despite similar accuracy) on the uncalibrated scores
+
+For `roc_auc`, `pr_auc` and `gain_capture` measures the individual curves can be shown
+
+### roc_auc
+
+```{r roc auc curves, fig.height = 4.5, fig.width = 8}
+bind_rows(lapply(paste0("Repeat", 1:5),
+                 function(x){
+                   collect_predictions(DMP_all_ranger_cv)  %>% 
+                     filter(id == x) %>% 
+                     roc_curve(truth = CC_Epi_newLRO, 
+                               .pred_Alpha_like : .pred_Intermediate_WT) %>% 
+                     mutate(id = x)
+                 })) %>% 
+  arrange(sensitivity) %>% 
+  ggplot(aes(x = 1 - sensitivity,
+             y = specificity,
+             color = id)) + 
+  geom_line() +
+  geom_abline(slope = 1, 
+              intercept = 0, 
+              linetype = "dotted") +
+  theme_classic() + 
+  facet_wrap(~ .level) 
+```
+
+* For Beta_like and Intermediate_WT the separation of scores is most clear
+* The Intermediate_ADM_WT and Alpha_like groups allow early misclassifications
+
+### pr_auc
+
+```{r pr auc curves, fig.height = 4.5, fig.width = 8}
+bind_rows(lapply(paste0("Repeat", 1:5),
+                 function(x){
+                   collect_predictions(DMP_all_ranger_cv)  %>% 
+                     filter(id == x) %>% 
+                     pr_curve(truth = CC_Epi_newLRO, 
+                              .pred_Alpha_like : .pred_Intermediate_WT) %>% 
+                     mutate(id = x)
+                 })) %>% 
+  ggplot(aes(x = recall,
+             y = precision,
+             color = id)) + 
+  geom_line() +
+  geom_abline(slope = - 1, 
+              intercept = 1, 
+              linetype = "dotted") +
+  theme_classic() + 
+  facet_wrap(~ .level) 
+```
+
+* As expected, recall is highest in the two smalles groups Beta_like and Intermediate_WT
+* In the Intermediate_WT group there are large differences between the repeats (with small sample size group imbalances may be come exagerated)
+
+## gain curve
+
+```{r gain curves, fig.height = 4.5, fig.width = 8}
+getMaxGain = function(.level){
+  unique_levels = length(unique(.level))
+  gain_df = as.data.frame(table(.level) / length(.level)) %>% 
+    dplyr::rename(.percent_tested = Freq) %>% 
+    mutate(.percent_tested = .percent_tested * 100,
+           .percent_found = 100)
+  bind_rows(gain_df, 
+            tibble(.level = rep(unique(.level), time = 2),
+                   .percent_tested = rep(c(0, 100), each = unique_levels),
+                   .percent_found = rep(c(0, 100), each = unique_levels)))
+}
+
+bind_rows(lapply(paste0("Repeat", 1:5),
+                 function(x){
+                   collect_predictions(DMP_all_ranger_cv)  %>% 
+                     filter(id == x) %>% 
+                     gain_curve(truth = CC_Epi_newLRO, 
+                                .pred_Alpha_like : .pred_Intermediate_WT) %>% 
+                     mutate(id = x)
+                 })) %>% 
+  ggplot(aes(x = .percent_tested,
+             y = .percent_found,
+             color = id)) + 
+  geom_polygon(aes(color = NULL), 
+               data = getMaxGain(NDD_TD$CC_Epi_newLRO),
+               fill = "grey90",
+               show.legend = F) + 
+  geom_line() +
+  geom_abline(slope = 1, 
+              intercept = 0, 
+              linetype = "dotted") + 
+  
+  theme_classic() + 
+  facet_wrap(~ .level) 
+```
+
+* The interpretation of the gain curve is quite similar to the roc curve
+
+## Joining groups  
+
+Much of the uncertainty of the model is within the Intermediate_ADM and Intermediate_WT groups. Differentiating between these groups may be harder than differntiating between and Intermediate and more differentiated (Alpha_ and Beta_like) phenotype.  
+
+To see how this affects model interpretation, all Intermediate levels are merged. Likewise, Alpha_ and Beta_like levels are merged.  
+
+Many of the metrics depend on the chosen test level. Therefore the results are shown for both directions.  
+
+__Test level: Alpha_ + Beta_like__  
+```{r cross validation Alpha Beta}
+bind_rows(lapply(paste0("Repeat", 1:5),
+                 function(x){
+                   collect_predictions(DMP_all_ranger_cv)  %>% 
+                     filter(id == x) %>% 
+                     mutate(CC_Epi_newLRO = factor(ifelse(grepl("_like", CC_Epi_newLRO),
+                                                          "a", "b")),
+                            .pred_class = factor(ifelse(grepl("_like", .pred_class),
+                                                        "a", "b"))) %>% 
+                     hard_class_metrics(truth = CC_Epi_newLRO, 
+                                        estimate = .pred_class) %>% 
+                     mutate(id = x)
+                 })) %>% 
+  group_by(.metric) %>% 
+  summarize(.estimator = dplyr::first(.estimator),
+            mean = mean(.estimate),
+            sd = sd(.estimate)) %>% 
+  mutate(se = sd / sqrt(5),
+         CI_lower = mean - qt(0.025, df = 4, lower.tail = F) * se,
+         CI_upper = mean + qt(0.025, df = 4, lower.tail = F) * se) %>% 
+  mutate(across(where(is.numeric), ~ round(.x, digits = 3)), 
+         .metric = factor(.metric, levels = c("accuracy", 
+                                              "mcc",
+                                              "kap",
+                                              "sens",
+                                              "spec",
+                                              "j_index", 
+                                              "bal_accuracy",
+                                              "precision", 
+                                              "f_meas"))) %>% 
+  arrange(.metric) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = "striped",
+                full_width = F,
+                font_size = 10)
+```
+
+* All general measures of accuracy are increased over the five class case
+* There are fewer Alpha_ and Beta_like samples reducing the precision
+
+__Test level: Intermediate__  
+```{r cross validation Intermediate}
+bind_rows(lapply(paste0("Repeat", 1:5),
+                 function(x){
+                   collect_predictions(DMP_all_ranger_cv)  %>% 
+                     filter(id == x) %>% 
+                     mutate(CC_Epi_newLRO = factor(ifelse(grepl("Intermediate", CC_Epi_newLRO),
+                                                          "a", "b")),
+                            .pred_class = factor(ifelse(grepl("Intermediate", .pred_class),
+                                                        "a", "b"))) %>% 
+                     hard_class_metrics(truth = CC_Epi_newLRO, 
+                                        estimate = .pred_class) %>% 
+                     mutate(id = x)
+                 })) %>% 
+  group_by(.metric) %>% 
+  summarize(.estimator = dplyr::first(.estimator),
+            mean = mean(.estimate),
+            sd = sd(.estimate)) %>% 
+  mutate(se = sd / sqrt(5),
+         CI_lower = mean - qt(0.025, df = 4, lower.tail = F) * se,
+         CI_upper = mean + qt(0.025, df = 4, lower.tail = F) * se) %>% 
+  mutate(across(where(is.numeric), ~ round(.x, digits = 3)), 
+         .metric = factor(.metric, levels = c("accuracy", 
+                                              "mcc",
+                                              "kap",
+                                              "sens",
+                                              "spec",
+                                              "j_index", 
+                                              "bal_accuracy",
+                                              "precision", 
+                                              "f_meas"))) %>% 
+  arrange(.metric) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = "striped",
+                full_width = F,
+                font_size = 10)
+```
+
+* All general measures of accuracy are increased over the five class case
+* There are more Intermediate samples inflating the precision
+
+## Classification stability  
+
+Because cross valdation was run in replicates it is possible to calculate how frequently samples are not assigned the same class across all replicates.
+
+```{r classification stability, fig.height = 3, fig.width = 10}
+
+DMP_all_ranger_cv %>% 
+  collect_predictions(summarize = F) %>% 
+  dplyr::select(Sample_Name = .row, 
+                .pred_class) %>% 
+  mutate(Sample_Name = plyr::mapvalues(Sample_Name, 
+                                       from = seq_len(nrow(NDD_TD)),
+                                       to = NDD_TD$Sample_Name)) %>% 
+  group_by(Sample_Name) %>% 
+  mutate(n_classes = length(unique(.pred_class))) %>% 
+  ungroup() %>% 
+  filter(n_classes > 1) %>% 
+  dplyr::select(-n_classes) %>% 
+  group_by(Sample_Name, .pred_class) %>% 
+  summarize(n_reps = n(),
+            .groups = "drop") %>% 
+  mutate(n_reps = as.factor(n_reps)) %>% 
+  ggplot(aes(x = Sample_Name,
+             y = .pred_class,
+             fill = n_reps)) + 
+  geom_tile() + 
+  scale_fill_manual(values = colorRampPalette(RColorBrewer::brewer.pal(8, "BuPu")[c(4,7)])(4)) +
+  coord_fixed() + 
+  theme_classic() +
+  theme(axis.title = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+
+```
+* The majority of instability is within the Intermediate groups
+* In particular the separation between Intermediate_ADM and Intermediate_ADM_WT is less stable
+* The second most frequent istability is between the Alpha_like and Intermediate classes
+
+## Most relevant probes  
+
+From each cross validation fold the top 25 most relevant probes are extracted. 
+
+```{r plot probe scores, fig.height = 10, fig.width = 6}
+plotTopVar = function(n_top = 25){
+  # unnesting the variable importances
+  plot_data = DMP_all_ranger_cv %>% 
+    select(id, id2, .extracts) %>%
+    unnest(.extracts) %>%
+    unnest(.extracts) %>% 
+    group_by(id, id2) %>% 
+    dplyr::slice(1:n_top) %>% 
+    ungroup() %>% 
+    mutate(replicate_id = paste0(id, "_", id2)) %>% 
+    group_by(Variable) %>% 
+    mutate(n = n()) %>% 
+    ungroup()
+  
+  probe_order = plot_data %>% 
+    filter(!duplicated(Variable)) %>% 
+    arrange(n)
+  
+  plot_data %>% 
+    mutate(Variable = factor(Variable, 
+                             levels = probe_order$Variable)) %>% 
+    ggplot(aes(x = replicate_id,
+               y = Variable,
+               fill = replicate_id)) + 
+    geom_tile() + 
+    scale_fill_manual(values = c(RColorBrewer::brewer.pal(4, "Blues"),
+                                 RColorBrewer::brewer.pal(4, "Greens"),
+                                 RColorBrewer::brewer.pal(4, "Reds"),
+                                 RColorBrewer::brewer.pal(4, "BuPu"),
+                                 RColorBrewer::brewer.pal(4, "PuRd"))) +
+    theme_classic() + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+          axis.title.x = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank()) +
+    labs(title = paste0("top ", n_top, "probes per fold (", 
+                        nrow(probe_order), " unique probes)")) 
+}
+
+plotTopVar()
+```
+
+* Some probes appear in many replicates 
+* About half of the probes is unique to one fold and replicate  
+
+The low stability of the probes likely is a consequence of the way probes are weighted in the random forest models.  
+
+# Model validation
+
+```{r fitting final model}
+DMP_all_ranger_final = 
+  workflow() %>% 
+  add_model(set_engine(ranger_model,
+                       "ranger", 
+                       importance = "impurity")) %>% 
+  add_recipe(NDD_recipes$DMP_all) %>% 
+  finalize_workflow(ranger_grid[10, ]) %>% 
+  fit(bake(NDD_recipes$DMP_all, new_data = NULL))
+```
+
+```{r validation data set}
+NDD_probes = colnames(NDD_TD)
+NDD_probes = NDD_probes[grepl("^cg", NDD_probes)]
+
+SAM_metaData = readRDS("/Bioinformatics/projects/030_NETG1G2_EPIC/meta_data/221213_NETG1G2_EPIC_consensus_clustering_metaData.Rds") %>% 
+  mutate(is_metastasis = grepl("[am]P.*m[0-9]*", Sample_Name)) %>% 
+  filter(!is_metastasis)
+
+# It is not possible to use one of the already normalized data sets because some probes were removed during import 
+# the model requires all probes to be present in the data
+if (!exists("SAM_TD")){
+  if(!file.exists("processed_data/230301_SAM_TD.Rds")){
+    library(ChAMP)
+    
+    SAM = readRDS(file.path(dataDir, "IDAT_EPIC_NETG1G2_Primary_Metastasis_rgSet.Rds"))
+    
+    SAM = SAM[, SAM_metaData$Sample_UID]
+    colnames(SAM) = SAM_metaData$Sample_Name
+    
+    SAM = preprocessNoob(SAM, dyeMethod = "single", verbose = T)
+    
+    SAM_beta = getBeta(SAM, "Illumina")
+    SAM_beta = SAM_beta[order(rownames(SAM_beta)), ]
+    
+    SAM_norm = champ.norm(SAM_beta, 
+                          arraytype = "EPIC", 
+                          cores = 10,
+                          resultsDir = "/dev/null")
+    
+    
+    SAM_TD = t(SAM_norm[intersect(NDD_probes, rownames(SAM_norm)), ]) %>% 
+      as.data.frame() %>% 
+      rownames_to_column("Sample_Name") %>% 
+      as_tibble()
+    
+    SAM_TD = left_join(SAM_TD, 
+                       SAM_metaData %>% 
+                         dplyr::select(Sample_Name, 
+                                       CC_Epi_newLRO = CC_Epi_newG1G2_individual),
+                       by = "Sample_Name") 
+    
+    saveRDS(SAM_TD, "processed_data/230301_SAM_TD.Rds")
+  } else
+    SAM_TD = readRDS("processed_data/230301_SAM_TD.Rds")
+  
+}
+
+SAM_pred = predict(DMP_all_ranger_final, 
+                   bake(NDD_recipes$DMP_all, SAM_TD),
+                   type = "prob") %>%
+  bind_cols(predict(DMP_all_ranger_final, 
+                    bake(NDD_recipes$DMP_all, SAM_TD))) %>% 
+  bind_cols(select(SAM_TD, CC_Epi_newLRO))
+```
+
+__All groups__  
+```{r external validation all}
+SAM_pred %>% 
+  hard_class_metrics(truth = as.factor(CC_Epi_newLRO), 
+                     estimate = .pred_class) %>%
+  mutate(across(where(is.numeric), ~ round(.x, digits = 3)), 
+         .metric = factor(.metric, levels = c("accuracy", 
+                                              "mcc",
+                                              "kap",
+                                              "sens",
+                                              "spec",
+                                              "j_index", 
+                                              "bal_accuracy",
+                                              "precision", 
+                                              "f_meas"))) %>% 
+  arrange(.metric) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = "striped",
+                full_width = F,
+                font_size = 10)
+```
+
+* All measures, with exception of the precision are clearly lower in the validation cohort
+
+__Test level: Intermediate__  
+```{r external validation Intermediate}
+SAM_pred %>% 
+  mutate(CC_Epi_newLRO = factor(ifelse(grepl("Intermediate", CC_Epi_newLRO), "a", "b")),
+         .pred_class = factor(ifelse(grepl("Intermediate", .pred_class), "a", "b"))) %>% 
+  hard_class_metrics(truth = CC_Epi_newLRO, 
+                     estimate = .pred_class) %>%
+  mutate(across(where(is.numeric), ~ round(.x, digits = 3)), 
+         .metric = factor(.metric, levels = c("accuracy", 
+                                              "mcc",
+                                              "kap",
+                                              "sens",
+                                              "spec",
+                                              "j_index", 
+                                              "bal_accuracy",
+                                              "precision", 
+                                              "f_meas"))) %>% 
+  arrange(.metric) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = "striped",
+                full_width = F,
+                font_size = 10)
+```
+
+* When grouping all the Intermediate and Alpha_ and Beta_like groups togetehr some measures such as the precision are increased 
+* However many other metrics show a steep decrease (mcc, kap) 
+
+__This indicates that the class imbalance plays an important part in driving these measures.__ In the validation set only very few non-Intermediate samples are annotated.  
+
+## Proximity of training and the validation sets
+
+For reliable prediction the validation set needs to be located within the range of the training data. Data far outside the training range are likely result in incorrect predictions.  
+
+In particular, the validation data is based on EPIC methylation chips, while the training data mostly contains 450K samples. 
+
+To test the similarity the validation data is projected into the PCA space defined by the training data. The PCA is based on the DMPs used in consensus clustering.  
+
+__PCA of training data__  
+```{r pca of old samples, fig.height = 4, fig.width = 10}
+NDD_pca = prcomp(NDD_TD %>% dplyr::select(where(is.numeric)))
+
+NDD_pca_dist = dist(rbind(colMeans(NDD_pca$x[,1:2]), 
+                          NDD_pca$x[, 1:2]))[1:nrow(NDD_pca$x)]
+
+
+cowplot::plot_grid(
+  ggplot(as.data.frame(NDD_pca$x), 
+         aes(x = PC1, 
+             y = PC2,
+             color = NDD_TD$CC_Epi_newLRO)) + 
+    geom_point(aes(color = NULL), 
+               data = as.data.frame(t(colMeans(NDD_pca$x[,1:2]))),
+               color = "red",
+               size = 3) +
+    geom_point(size = 2) + 
+    scale_color_manual(values = c(Alpha_like = "dodgerblue4",
+                                                 Beta_like = "sienna3",
+                                                 Intermediate_ADM = "lightskyblue1",
+                                                 Intermediate_ADM_WT = "hotpink3",
+                                                 Intermediate_WT = "darksalmon")) +
+    theme_classic() + 
+    labs(color = "Epigenetic groups"),
+  ggplot(data.frame(distance = NDD_pca_dist), 
+         aes(x = distance)) + 
+    geom_histogram(binwidth = 1, 
+                   center = 0.5) + 
+    geom_vline(xintercept = quantile(NDD_pca_dist, 0.9),
+               color = "red") + 
+    theme_classic(),
+  rel_widths = c(4,3)
+)
+
+
+```
+
+* The training data nicely shows the separation of the groups from consensus clustering  
+
+__Projection of the validation set__  
+```{r pca embedding of new data, fig.height = 4, fig.width = 10}
+SAM_pca = predict(NDD_pca, dplyr::select(SAM_TD, where(is.numeric)))
+SAM_pca_dist = dist(rbind(colMeans(NDD_pca$x[,1:2]), 
+                          SAM_pca[, 1:2]))[1:nrow(SAM_pca)]
+
+cowplot::plot_grid(
+  ggplot(bind_rows(
+    as.data.frame(NDD_pca$x),
+    as.data.frame(SAM_pca)), 
+         aes(x = PC1, 
+             y = PC2,
+             color = c(rep("training", 155), 
+                       SAM_TD$CC_Epi_newLRO))) + 
+    geom_point(aes(color = NULL), 
+               data = as.data.frame(t(colMeans(NDD_pca$x[,1:2]))),
+               color = "red",
+               size = 3) +
+    geom_point(size = 2) + 
+    scale_color_manual(values = c(Alpha_like = "dodgerblue4",
+                                                 Beta_like = "sienna3",
+                                                 Intermediate_ADM = "lightskyblue1",
+                                                 Intermediate_ADM_WT = "hotpink3",
+                                                 Intermediate_WT = "darksalmon",
+                                                 training = "grey90")) +
+    theme_classic() + 
+    labs(color = "Epigenetic groups"),
+  ggplot(data.frame(distance = SAM_pca_dist), 
+         aes(x = distance)) + 
+    geom_histogram(binwidth = 1, 
+                   center = 0.5) + 
+    geom_vline(xintercept = quantile(NDD_pca_dist, 0.9),
+               color = "red") + 
+    theme_classic(),
+  rel_widths = c(4,3)
+)
+```
+
+* The data of the validation data set is well located withing the range of the training data
+* The switch in technology does not seem to affect the data too much
+
+__The result of the individual consensus clustering does not match well with the position of the samples in the PCA plot.__ This is problematic because the consensus clustering is used to define the ground truth. This a large contributor to the reduced performance of the model on the validation data.  
+In particular the prediction of Alpha_ and Beta_like samples seems off.  
+
+__Comparison of predicted classes__  
+```{r comparison of annotations, fig.height = 3.5, fig.width = 10}
+cowplot::plot_grid(
+  ggplot(bind_rows(
+    as.data.frame(NDD_pca$x),
+    as.data.frame(SAM_pca)), 
+         aes(x = PC1, 
+             y = PC2,
+             color = c(rep("training", 155), 
+                       SAM_TD$CC_Epi_newLRO))) + 
+    geom_point(aes(color = NULL), 
+               data = as.data.frame(t(colMeans(NDD_pca$x[,1:2]))),
+               color = "red",
+               size = 3) +
+    geom_point(size = 2) + 
+    scale_color_manual(values = c(Alpha_like = "dodgerblue4",
+                                                 Beta_like = "sienna3",
+                                                 Intermediate_ADM = "lightskyblue1",
+                                                 Intermediate_ADM_WT = "hotpink3",
+                                                 Intermediate_WT = "darksalmon",
+                                                 training = "grey90")) +
+    theme_classic() + 
+    labs(color = "Epigenetic groups\nfrom cons clust"),
+  ggplot(bind_rows(
+    as.data.frame(NDD_pca$x),
+    as.data.frame(SAM_pca)), 
+         aes(x = PC1, 
+             y = PC2,
+             color = c(rep("training", 155), 
+                       as.character(SAM_pred$.pred_class)))) + 
+    geom_point(aes(color = NULL), 
+               data = as.data.frame(t(colMeans(NDD_pca$x[,1:2]))),
+               color = "red",
+               size = 3) +
+    geom_point(size = 2) + 
+    scale_color_manual(values = c(Alpha_like = "dodgerblue4",
+                                                 Beta_like = "sienna3",
+                                                 Intermediate_ADM = "lightskyblue1",
+                                                 Intermediate_ADM_WT = "hotpink3",
+                                                 Intermediate_WT = "darksalmon",
+                                                 training = "grey90")) +
+    theme_classic() + 
+    labs(color = "Epigenetic groups\nfrom rand forest")
+)
+```
+
+* The predicted classes do fit much better to the PCA than the classes from consensus clustering
+* More samples are predicted as Beta_like than expected from the location in the PCA
+
+__Another method for defining the ground truth is required.__  
+
+# Summary  
+
+An initial random forest classifier was developed by Marco Visani. The training was done following the procedure used by Capper et al to construct the brain tumor classifier.  
+
+One of the main open questions was the low overlap between probes used by the model and probes used for consensus clustering. Here, training was repeated using the DMPs from consensus clustering. Additionally, the model training procedure was switched to the `tidymodels` workflow that is more generalized and allows easier switching between different types of classifier.   
+
+Model performance is similar or slightly higher compared to the unsupervised model. Tuning of model parameters had little impact on performance. This may be because none of the parameters was chosen to a very low level where performance is expected to degrade. Random forest model often work well with the default parameters and this is confirmed here.  
+Also two different implementation of random forests `ranger` and `randomForest` produced equivalent results.  
+
+When measuring the model performance, the imbalance in the classes should be taken into account. Many metrics such as the accuracy are overestimates of model performance in imbalanced cases. The likelihood based metrics `roc_auc`, `pr_auc` and `gain_curve` show how the model performance is different across classes. In particular the Intermediate_ADM and Intermediate_ADM_WT classes seem to be less well defined. The `mn_log_loss` is lower compared to Marco's model indicating a better fit.   
+
+Cross validation was performed in replicates and shows that the prediction is stable in most cases. Some Intermediate and few Alpha_like cases show instability. This may be connected to intrinsic ambiguity of the class identities. The probes used by the model are often unique to a particular replicate and therefore not very useful to extract biological information.  
+The weak link between probes and importance is due to the way probe importances are assigned by the random forest model. If there is correlation between probes the importance scores will be distributed randomly across all correlated probes. This most likely is also the reason for the poor link between the probes in the model by Marco and the DMPs.  
+
+It is possible to de-correlate the data prior to model fitting. Doing this removes about 1000 probes and slightly degrades model performance. This means that removing these probes also does remove some of the information.
+
+Applying the model to a validation set gives mixed results. The validation set is highly imbalanced and as such many metrics are highly skewed. The overall accuracy is not too bad but the mmc and kap values are quite low. Combining all Intermediate samples allows high recall but this most likely is due to their high number. 
+
+Importantly, looking at the similarity of the training and validation data it becomes apparent that the class assignments from the consensus clustering are a quite bad fit to the PCA embedding. Because the individual consensus clustering is used to define the ground truth, having a poor fit does degrade the performance of the model. Otherwise, the fit between training and test data is quite good with no indication that technology does skew the methylation data.  
+
+There are several options to improve the model. The most important one is the need to better define the ground truth in the validation set. Hoever, it many also be beneficial to revisit the original consensus clustering. Potential replacements are tree based clustering algorithms such as `Leiden` or `random walk`. 
+
+Using the DMPs itself is a case of information leakage that may contribute to overly optimistic estimates in cross validation. A better approach would be to select probes from all of the data. This was done by Marco but outside of cross validation. It has been shown that it is important to also cross validate the feature selection steps. An improved model could do this either on the decorrelated probes or after running PCA to deal with the correlation in the methylation signal.  
+
+```{r session info}
+sessionInfo
+```
+
+------
+
+```{r xg, eval = F}
+NDD_CB_xg_model = boost_tree(mode = "classification",
+                             trees = tune(), 
+                             learn_rate = tune()) %>% 
+  set_engine("xgboost")
+
+NDD_CB_xg_grid = grid_regular(trees(c(50, 200)),
+                              learn_rate(c(-4, -1)),
+                              levels = 4)
+
+NDD_CBfolds = vfold_cv(training(NDD_CBsplit),
+                       v = 4, 
+                       strata = CC_Epi_newLRO)
+
+NDD_CB_xg_tune = workflow() %>% 
+  add_model(NDD_CB_xg_model) %>% 
+  add_recipe(NDD_CBfull_recipe)  %>% 
+  tune_grid(resamples = NDD_CBfolds,
+            grid = NDD_CB_xg_grid)
+
+collect_metrics(NDD_CB_xg_tune) %>% 
+  mutate(trees = as.factor(trees)) %>% 
+  ggplot(aes(x = learn_rate, 
+             y = mean,
+             color = trees)) + 
+  scale_x_log10() +
+  geom_point() + 
+  facet_wrap(~ .metric)
+```
+
+```{r wg model, eval = F}
+
+NDD_CBfull_xg = workflow() %>% 
+  add_model(NDD_CB_xg_model) %>% 
+  add_recipe(NDD_CBfull_recipe)  %>% 
+  fit(training(NDD_CBsplit))
+
+NDD_CBtest = NDD_CBfull_recipe %>% 
+  bake(testing(NDD_CBsplit))
+```
+
+```{r xg fit, eval = F}
+NDD_CBfull_xg_res = predict(NDD_CBfull_xg, 
+                            NDD_CBtest,
+                            type = "prob") %>%
+  bind_cols(predict(NDD_CBfull_xg, 
+                    NDD_CBtest)) %>% 
+  bind_cols(select(NDD_CBtest, CC_Epi_newLRO))
+```
+
+```{r xg results, eval = F}
+NDD_CBfull_xg_res %>% 
+  metrics(truth = CC_Epi_newLRO,
+          .pred_Alpha_like : .pred_Intermediate_WT,
+          estimate = .pred_class)
+```

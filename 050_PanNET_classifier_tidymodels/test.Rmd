@@ -1,0 +1,27 @@
+---
+title: "test"
+output: html_document
+date: "2023-04-20"
+---
+
+```{r}
+test_var = "2.8e-15"
+```
+
+
+When using an Bonferroni adjusted p value < 0.05 the frequency is $`r gsub("e(-*[0-9]*)", "\\\\times10^{\\1}", test_var)`$. 
+
+```{r}
+gsub("e(-*[0-9]*)", "\times10^{\\1}", "2.8e10")
+```
+
+$2.8\times10^{-10}$
+
+
+```{r}
+test_meta = data.frame(A = rep(c("a", "b"), each = 3), 
+                       B = rep(c("x", "y", "z"), times = 2))
+
+model.matrix(~ 0 + A, batch = B, data = test_meta)
+```
+

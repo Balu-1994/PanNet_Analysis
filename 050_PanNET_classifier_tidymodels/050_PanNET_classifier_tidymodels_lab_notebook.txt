@@ -1,0 +1,557 @@
+# analysis log
+
+The original model for the PanNET classifier was built in `043_PanNET_classifier_student_project` along the lines of Capper 2018.  
+The performance was OK but behind expectations. Here the model is rebuilt using the tidymodels framework to try additional strategies 
+for feature selection and sampling.  
+
+# Raw data 
+
+* methylation data raw files are available under `P:\Forschung\GRP Perren_Marinoni\9.GenomicData\DNAmethylation\IDAT`
+* For ease of access local copies of methylation raw data were used
+
+# Software
+
+* R 4.2.2 (docker)
+
+# Methylation data sets  
+
+* 155 samples by Nunzia
+* 030_220201_NETG1G2_EPIC_consensus_clustering_DiDomenico_ComBat.Rds
+
+# 230301
+
+## Data set  
+
+Instead of extracting the relevant probes from the random forest model itself, the strategy is to take the DMPs used in the consensus clustering as 
+the features. Using the same probes makes it more likely to obtain the same classification.  
+Therefore the same preprocessing from the consensus clustering in `030_NETG1G2_EPIC`, `220609_NETG1G2_EPIC_consensus_clustering_plus_metastases` can 
+be used.  
+
+__IMPORTANT__  
+For new data to be classified it will be necessary to not run any filtering on the probes because all probes used in the classifier need to be 
+present in the query data.  
+
+## Tidymodels  
+
+Working along the tidymodels first steps tutorial I set up an initial classifier using a random forest. All of the DMPs (5888) are used as features. 
+For the initial tests I used the ComBat corrected data. This may be problematic because the ComBat correction introduces a relationship across the 
+samples that may allow for information exchange across the traininig and test set. For the initial trial this is acceptable but for the actual model 
+I will need to find a strategy.   
+
+Dealing with the differences in group size is different between the tidymodels workflow and the randomForest package used by Marco and Capper et al. 
+In randomForest samples with replacement are drawn form each stratum up to the size of the smallest stratum. This effectively reduces the data to 
+5 sets of 10 samples (the size of the Intermediate_WT group). I'm not sure if this is done only one or iteratively for each of the trees. If only 
+once this would greatly reduce the data.  
+In the tidymodels package dealing with minority groups is done using oversampling rather than undersampling. This mainly is a difference in how to 
+look at the problem. For the default oversampling the minority classes are filled up by random sampling, essentially using the same technique as 
+randomForest. There are other more advanced methods to simulate samples but all failed due to the low sample size.  
+
+* As discussed above upsampling is used to adjust for difference in class sizes  
+* Using a 70 / 30 split I can train a model with > 85% accuracy on the testing data 
+* Overall the random forest of the ranger package seems to outperform the randomForest package  
+* An xgboost model did perform very poorly (I think this is due to the very low sample size)
+
+One big advantage of the tidymodels package is how easy it is to perform prameter cross validation. I tried this retaining the 70 / 30 split of the 
+data. Depending on the model this search can take quite a while and might best be performed in parallel.    
+When running repeated model estimation it is possible to extract the model fits as well as the probe estimates. This allows extracting the scores 
+for each sample in the training set.  
+
+* When building the cross validation folds tidymodels does merge groups with less than 10% frequency (Intermediate_WT is ~ 6.5%) 
+* Therefore, when increasing the number of folds they are not guaranteed to contain Intermediate_WT samples in the test split
+* The difference in performance of the random forest are quite small 
+* There is no clear trend especially in the number of trees (this instability also seems be due to the low sample size)
+* The performance of the xgboost model cannot be improved 
+
+For the real model I will need to read some more and figure out how to best set up everything.  
+
+* Split of the data (for Marco we used all of the 155 samples as the training data without testing)
+* Use ComBat at any step (is it possible to integrate ComBat as a preprocessing step to run only on the training data durinc cross validation)
+* How many cross validation folds are sensible (given the small Intermediate_WT group)
+
+# 230302
+
+## Learning   
+
+To better understand tidymodels I read the addional articles in the learning section.  
+
+Most deal with the use of the tidy framework to extract model results. This is quite interesting and may be helpful for cases where a simple lm 
+is run repeatedly. There also are some specifics on how to parameterize elastic net regression models and SVMs that could be interesting as 
+alternatives to a random forest.  
+The later articles really ramp up the difficulty when dealing with setting up custom function. This would be great to know in case I would like to 
+run ComBat on the training data within the splits. Maybe there are more hands on tutorial to find.  
+
+Tidymodels has the same issue that is part of dplyr and ggplot. Often there are several ways of doing the same thing and it is easy to get lost in 
+the multitude of functions. Also reading the help somethmes requires figuring out wich functions are equivalent.  
+
+* The `juice` function is replaced by `bake(new_data = NULL)` 
+* This requires running `prep` with `retain = T`
+* The basic introduction is using juice and bake at different steps  
+
+# 230306
+
+## Feature selection  
+
+One potential issue with the models we are using is that there are many more predictor variables than samples (5888 vs 155). There is a general 
+consensus that this is not problematic for random forests. For other models this may be much more problematic and some models will not accept more 
+features than samples.  
+
+One thing to consider for random forests are correlated features. If two or more features are highly correlated the importance essentially will be 
+split across them randomly. This has implications when selecting probes based on their random forest importance score.  
+In the methylation data many probes are expected to be highly correlated and this likely is part of the reason why the highly important probes did 
+not overlap with the DMPs in Marcos classifier.  
+
+The tidymodels recipes contain a function for decorrelation of probes that can be used to filter the probes. In a pair of correlated probes one will 
+be chosen at random (it may be possible to select all probes that are correlated when reporting the probes but this is rather complex to realize). 
+At least the importance scores of the filtered data are no longer driven by random splitting across correlated networks.  
+
+There are several ways of selecting features based on correlation with the phenotype. This is the approach taken by Capper et al and also used by 
+Marco. In addition to classifier inherent methods it may be possible to use correlation, ranking by test statistic or information gain to select 
+relevant features.  
+Information gain is the Entropy of the groups minus the Entropy of the groups knowing one of the explanatory variables. The second term is the sum 
+of the entropies when subsetting the data to a the explanatory variable. For continuous variables like the methylation values will need to be 
+transformed into groups. In this context often the Kullback-Libler divergence is mentioned but I will need to read more to find out how this can be 
+used to obtain the information gain.  
+
+__IMPORTANT__  
+In machine learning it is crucial to separate training and test data sets to avoid learning random patterns common to both data sets. This means 
+that during cross validation the same principles need to be applied as when considering the initial traininig and test data split. In particular 
+pre-processing is very liable to data leakage.  
+For example when selecting probes based on correlation with the phenotype there is a substantial chance of overfitting. If this feature selection 
+is done outside of the cross validation loop, the cross validated performance likely is an overestimate (both training and test data are based on 
+the same set of probes). To avoid this feature selection needs to be performed within the cross validation. This way the test data remains independent 
+and can correctly estimate how well the feature selection method works.   
+
+__NOTE__  
+One crucial point of understanding cross validation is that it is used to evaluate how well a strategy works. It is not used to extract and 
+variables. For example when performing feature selection by ranking of the probes, cross validation will tell us if the selected probes are 
+generally overfit to the testing data or actually are representative of the larger population. If the selection strategy gives sensible results in 
+cross validation it can be applied to the full testing data. At no point, the probes from cross validation are used to define the final model. 
+
+# 230307
+
+## Setting up feature tuning   
+
+The workflows I'm setting up are:  
+
+* random forest (ranger) on all DMPs 
+* random forest (ranger) on the decorrelated DMPs  
+
+All 155 samples are used without ComBat to reduce data leakage.  
+
+__IMPORTATN__  
+When checking back on Marco's code I noticed that he actually performed cross validation on the ComBat corrected data. In our discussion I suggested 
+using the unnormalized data (as is done in Capper et al. to avoid data leakage). This must have been lost or misunderstood. As a consequence, it is 
+likely that the estimates of model performance were overly optimistic. On the set of new samples performance was quite a bit lower than in cross 
+validation.  
+
+__IMPORTANT__  
+Selecting the DMPs actually already constitutes a form of data leakage. The DMPs were obtained from comparing the clusters of 125 samples in Di 
+Domenico 2020. As such they are external to the cross validation increasing the likelihood of overestimating the model performance.  
+However, the probes were all used as input to the consensus clustering without selecting the ones best correlated with the groups. Therefore, the 
+leakage is a mix between the groups (alpha- and beta-like more closely resemble the original groups increasing the leakage, while the subdivision 
+of the intermediate groups is less dependent on the original groups (where all intermediate samples were pooled together.   
+
+For now I will use the DMPs but it will be interesting to re-run the analysis using the random forests feature selection to obtain the most relevant 
+probes. As mentioned above this will need to be performed as part of the cross validation.  
+
+The initial runs using default parameters were within the expected 80% of precision. 
+
+# 230308
+
+## Tuning hyperparameters 
+
+To tune hyperparameters a grid search needs to be set up. In the random forests the two most important parameters are the number of trees and the 
+number of features samples for each tree (mtry).  
+
+When performing a grid search the model performance strongly depends on the chosen sample. To get better estimates of the mean values it is common to 
+run nested cross validation. Within each fold another cross validation or bootstrapping is performed. This is similar to the approach from Capper that 
+allowed us to see the noise for all three initial folds.  
+
+Additionally, the cross validation can be repeated several times to increase the precision of the statistical estimates.  
+
+For the current data I'm using 
+
+* 4 fold cross validation (repeated 5 times)
+* 10 bootstraps within each fold (the samples not chosen in the sampling process of the training data form the test data)
+* For each bootstrap the grid of hyperparameters is applied  
+
+The results of the nested cross validation are at the level of the bootstraps. They can be further aggregated to the level of cross validation folds 
+and one final mean estimate.  
+
+__NOTE__  
+It is not recommended to use bootstrapping in the outer loop of nested cross validation because it does not guarantee that all samples are used once 
+during model fitting.  
+
+## setting up parallel processing  
+
+Due to the high number of trees being fit it is quite important to perform some kind of parallelization.  
+
+__NOTE__  
+When a parallel backend is registered the `tune_grid` and `fit_resamples` function of tidymodels automatically will use parallel processing. The kind 
+of processing can be controlled using `grid_control` or `resamples_control`.  
+
+The parallelization shown in the tidymodels vignettes is based on the `future` package. This has the advantage that it is easier to manage the clusters 
+because each process is only started once it is required. However, for some reason the `future` package let me register cores and opened the 
+connections once processing started but never actually made use of the additional cores.  
+This was the same when using the `multisession` or `multicore` plan. When running `multicore` from RStudio there is a warning about potential 
+instabilities. This is somehow connected to the way RStudio is handling sessions. But also starting `multicore` from an R script outside of RStudio 
+did not make use of the specified workers.  
+
+As an alternative I set up `doParallel` by setting up a cluster psock connections. This does work and allows multicore processing within `tune_grid`. 
+
+__NOTE__  
+When running only 5 bootstraps the maximum number of cores used with parallelization of resamples is 5. Therefore, it would be better to run 
+parallelization over the cross validation folds of which there are many more (20). This requires using some kind of parallel lappy (the example with 
+`future_map` does not work because it requires a future cluster structure).  
+the parallel exection could be obtained by running `doParallel::foreach` 
+
+__NOTE__  
+The main complication with parallel processing is when pre-processing is handled. When setting `tune_grid` to `everything` each set of tuning 
+parameters is treated separately including pre-processing. In the few tests I have run the full parallelization took longer to execute than running 
+in parallel over the bootstraps. The reason most likely is the cost of pre-processing. This will be more severe in cases where pre-processing is more 
+complex (such as decorrelating probes prior to model fitting).  
+
+With the test set up using 25 feature combinations it takes about 1h to tune the full model.
+
+# 230309
+
+__IMPORTANT__  
+When summarizing the tuning results, I noticed a stupid typo in the random seed function when setting up the cross validation folds. This means that 
+up until now the folds were not stable. This was corrected.  
+
+## Summarizing tuning results 
+
+From the tuning results the parameter fits are extracted for each bootstrap. This can further be aggregated over the cross validation folds and finally 
+summarized into one measure for each parameter by averaging the cv folds.  
+
+When plotting the results, it is pretty obvious that the hyperparameters have not real impact on the model performance. On average all the models using 
+all DMPs have an accuracy of about 82% with an roc_auc of > 0.96. The changes are in the second significant digit essentially making all models equally 
+performant. Also the spread of model performance is highly similar for all settings.  
+
+# 230310
+
+## Summarizing tuning results  
+
+The tuning grid was adjusted slightly to incorporate a wider range of `n_trees`. To reduce the search space the number of `mtry` levels was limited.  
+For the number of trees there might be some performance increase with larger numbers of trees while the mtry usually are well covered using the default 
+value (sqrt(n_features)).
+
+The summary of the tuning parameters was improved by using the tidymodels function `collect_metrics`. This streamlines the necessary transformations 
+quite a bit and simplified plotting.  
+
+Even with the extended range of `n_trees` there is no visible impact on model performance. Based on this it should be possible to use the default value 
+of mtry and a medium size number of trees in the final fit.  
+
+## Only running the outer cv
+
+For the final evaluation I'm interested in the predictions and significant features from the cross validation fits. To obtain this I need to run the 
+outer loop of the cross validation only. This is not directly possible from the nested cross validation object. When I use the same seed to set up the 
+same cross validation as used by the nested object the folds actually are the same. This object now can be used to fit the cross validation using the 
+chosen model parameters.  
+
+# 230313
+
+## Additional tuning  
+
+The tuning was run for the random forest including a decorrelation step. The decorrrelation slows down tuning quite a bit.  
+Similar to using all probes the hyperparameters do not really impact model performance. In contrast to the model with all DMPs the performance is 
+slightly reduced. This was also observed in the examples in the tidymodels book and may be a general consequence of removing probes.  
+The main advantage of this approach is to better identify relevant probes. However, there still is the unsolved problem of how to report the correlated 
+probes (only one is retained at random). Therefore, I think having a better understanding of the probes is less of a benefit than dealing with a 
+reduction in model performance.  
+
+To complement the testing, the model on all DMPs was run using a different implementation of random forests. The `randomForest` package is the one used 
+in Capper et al. and by Marco. In the initial tests the performance was worse with `randomForest` compared to `ranger`.  
+On the nested resampling data both random forest implementations perform equally well. It may be that the differences in the initial tests were due to 
+the data set used and are smoothed out over the repeated resampling. Also for this implementation tuning hyperparameters has very little effect on the 
+model performance.  
+
+## Improvements to tuning  
+
+For the random forest the number of tunable parameters is very small. For more complex models the number of parameters may make a grid search very 
+expensive. Therefore, iterative methods such as Bayesian optimization were developed. These methods explore only a subset of all possible parameters by 
+a strategy that can be tuned for a wider or deeper search.  
+
+In the present case this will not be used because the expected gain from any hyperparameter optimization is minimal.  
+
+## Measures for model performance   
+
+Until now I have mainly been using the ROC AUC and accuracy to evaluate model performance. However, there are many additional measure that may be a 
+better fit for the data. For example, the accuracy may be inflated in case of class imbalances while sensitivity and specificity show where imbalance 
+may be a problem.  
+
+Performance measures are implemented in the `Yardstick` package within tidymodels. These are grouped by 
+[data type](https://yardstick.tidymodels.org/articles/metric-types.html).  
+
+* Class metrics measure hard class assignments 
+* Class probability metrics can make use of probabilities (such as the random forest votes)
+* Numeric metrics are available only for numeric responses
+
+__NOTE__  
+Several metrics have more than one metrics function (if two names are used frequently). This sometimes makes it a little hard to see all metrics of 
+interest.  
+
+For the cross validated model all sensible metrics are applied to get an overview how these measures work. The summary contains short descriptions 
+for each metric.  
+
+The alternatives to accuracy (mcc and kap) are lower indicating that the accuracy measure actually is an overstimate due to the class imbalance. 
+For the same reason the precision is higher than the specificity. Assigning a sample to one of the majority group will is more likely to 
+increase the precision but may increase false positives (decreasing specificity)
+
+The class probability measures show that the intermediate_WT and Beta_like (the two smallest groups) are the easiest to predict. The Alpha_like group 
+is expected to be stable but does show some overlap with the intermediate groups.  
+
+__NOTE__  
+For future tests it will be best to use other measures than the accuracy given the high class imbalance.  
+
+# 230314
+
+## BC2 abstract  
+
+I decided to go to the BC2 conference in Basel. For this I prepared an abstract about the classfier.  
+
+The performance measures are taken from the current state of the analysis. These will likely not be the same for the final classifier but from my 
+experience until now it is unlikely that the performance will increase dramatically (or decrease).  
+
+## Validation data  
+
+Also for the abstract, I wanted to run the NETG1G2 validation data set with the final classifier. For this the data needs to be loaded and normalized.  
+
+__NOTE__  
+Unfortunately it is not possible to use the saved normalized data because not all probes were included after the filtering step.  
+
+Loading the data takes very long. For some reason the virtual machine is using all available memory although R is indicating relatively mild memory 
+usage. This may be connected with the use of doParallel cores. They may duplicate objects from the current session. However, stopping the cores does 
+not free memory.  
+
+As true class labels I used the assignments from the iterative consensus clustering using one sample at a time. Only this clustering can be used 
+because the one I did by including all samples has two of the intermediate groups merged.  
+
+The performance is rather low. Only the prediction of Intermediate vs Alpha_ plus Beta_like looks OK (due to the large number of intermediate samples 
+in the validation set).  
+
+I tested if the validation data is far from the training data set using the PCA method described in the tidymodels book. This works well and shows that 
+the validation data nicely fits with the training data.  
+
+__IMPORTANT__   
+When looking at the class assignments of the validation data in the PCA it becomes very aparent that the labels from consensus clustering do not 
+fit well with the location in the PCA plot. This suggests that the iterative clustering is not a suitable method for defining a ground truth.  
+I will need to find alternative solutions to obtain a ground truth that I can test.  
+
+# 230315
+
+## Finalizing report  
+
+The current state of the random forest is finalized in a report integrating the validation step.  
+
+## Next steps  
+
+There are several avenues for improving the classifier itself:  
+
+* Training on all available probes (the DMPs likely are overfit to the training data - DMPs were found on 125 of 155 samples)
+* Cross validation of feature selection 
+* Dealing with correlated features (PCA or decorrelation) - PCA seems to be a very good option
+* Check for genes removed in the latest EPIC versions before running PCA
+
+For the validation data, the current state of the ground truth is not very good. The consensus clustering is overestimating the presence of Alpha_like 
+samples. This may be connected with the algorithms used for clustering but likely will be hard to tease out.   
+
+When looking at the PCA embedding I think an interesting approach may be to use some sort of graph based clustering. This is will be more flexible than 
+the hierarchical clustering that is at the core of the consensus clustering. In particular when combining the new and old data this likely is more robust. 
+This may also be an interesting approach for grouping the original data. The only thing is that we then do not have the bootstraps (it may be possible 
+to add bootstrapping to the graph based procedures though).  
+
+One crucial aspect will be to include additional information in the ground truth. This partially is the case for the training data but should also be 
+applied to the validation data. Basically, the unsupervised clustering needs to act as a guideline for confirmation using marker gene expression or 
+clinical parameters.  
+
+To see how other people are dealing with the continuous integration I can have a look at the following classifiers:  
+
+* [DKFZ](https://www.molecularneuropathology.org/mnp/)
+* [Basel](https://www.unispital-basel.ch/en/pathology-research/our-research/epigenomics)
+* [Amsterdam](https://cgeisenberger.shinyapps.io/methedrine/)
+
+# 230323
+
+## Redefining the ground truth  
+
+After seeing the poor performance of the consensus clustering on the NETG1G2 data the question was to evaluate the origninal consensus clustering as well. 
+Also I wanted to see if I can take the consensus clustering matrix and convert it into some kind of measure of stability for each sample. This may help 
+with providing a upper limit for the classifier performance.  
+
+Using the consensus matrix it is possible to extract the scores within and without the groups. I tried to apply the information gain measures to this but 
+there is a strong dependence on the group size. Also the scores and the group IDs are two aspects of the same data making the information gain complex to 
+interprete.  
+As an alternative I quantified the log fold change of consensus scores within and without of the assigned cluster. This helps with identifying cases where 
+the consensus values are distributed across many instances. However, cases where the without cluster scores are limited to few samples likely are not well 
+represented.  
+It may be possible to use the collection of metrics from the scran single cell marker tests when describing these differences.  
+
+Based on the logFC I highlighted some samples with poor classification accuracy.  
+
+Using the DMPs from Di Domenico 2020 I calculated PCA and UMAP embeddings. Also for the UMAP embedding the discrepancy between consensus clustering and 
+neighboring samples is clearly visible.  
+
+__IMPORTANT__  
+One surprising observation was that the uncertainty I obtained from the consensus clustering matrix does not match the misclassification error. Many 
+samples with high uncertainty actually are located well within the expected cluster, while outlier samples are assigned with high certainty. 
+
+This underlines the potential problems with the consensus clustering. This may be inherent to the use of hierarchical clustering in this kind of scenario 
+or is due to the choice of clustering algorithms (Ward.D2 for inner and complete linkage for the outer clustering). 
+
+Based on these observations the next step should be to test alternative ground truths utilizing the PCA, UMAP embeddings or the nearest neighbor graph. 
+
+__NOTE__  
+This would also be an opportunity to fix the issue with the ComBat batch correction in the old data. When running ComBat Nunzia had to define a 
+protected biological effect and chose DAXX / ATRX status. However, this is not available for one of the samples and does lead to overcorrection of 
+this one sample.  
+In the end the question is how much correction actually is required to obtain sufficient clustering. In Capper only large technical effects such as the 
+source material (frozen vs FFPE) were corrected for. Slide effects were not included. Also based on the PCA of our data the Slide does not seem to be 
+a major source of batch effect.  
+
+# 230329  
+
+## Optimal cluster number
+
+I was searching for commonly used ways of quantifying the clustering quality in consensus clustering. In this context I found some literature about 
+how to best find the optimal number of clusters: [John 2020](https://doi.org/10.1038/s41598-020-58766-1).  
+The suggested metric relies on bootstrapping which I did not do yet. However, based on the curve flatness measure (PAC score) 5 clusters is not yet 
+optimal. When the number of chosen clusters was too low this may explain why some samples show unexpected behavior.  
+
+I might want to repeat the consensus clustering with a higher number of clusters merging them back into 5 classes based on the consensus tree. 
+
+__NOTE__  
+One issue described in the publications was the tendency of consensus clustering to find structure in data without clusters.  
+
+## Identification of outliers   
+
+The identification of outliers in consensus clustering was improved using only the entropy instead of the mutual information. This simply measures if 
+the consensus scores can take more values or if they are enriched in one value.  
+
+When arranging samples by entropy the most unsecure cases clearly are identifiable. When setting the 80th percentile (this roughly equals the maximal 
+classifier performance) as a threshold the most uncertain cases can be identified.   
+This selection does largely overlap with the selection chosen before but is easier to visualize and shows greater variability between samples. Also 
+the epigenetic groups are arranged as expected.  
+
+Using the entropy PCA and UMAP plots are generated. There is better agreement between entropy and location in the plots but the glaring discrepancies 
+do remain. 
+
+The next step will be to test alternatives to consensus clustering.  
+
+# 230405
+
+## Clustering alternatives  
+
+I looked into clusterin alternatives as described in the OSCA book. Many clustering algorithms are implemented in the `bluster` package using a 
+unified interface. With this it actually is quite easy to apply diverse clusterings to the data.  
+
+At first glance graph based clustering seems to give the best results. There are many untested parameters that I will need to compare.  
+
+## Batch correction  
+
+I realized that I had never looked at the PCA and UMAP embeddings of the samples when using the ComBat corrected data. I did not use ComBat for the 
+training the random forests because the correction was performed on the Slide level and in the cross validation there quickly are levels that have 
+only one level. This will be problematic for the training data. Also for any new data I will not be able to use this batch correction.  
+
+__NOTE__  
+I put together a small example that shows that when assigning a random sample to a single batch ComBat will move this sample to the center of the 
+distribution. This clearly shows that having levels with only one factor likely will lead to strong distortions in the data.  
+I did not check what happends with a protected biological effect but I expect the one sample batch to be corrected towards the mean of the biological 
+batch.  
+Such a behavior is suffient when removing effects for differential expression between groups but for classification tasks there is quite a chance that 
+the data is distorted.  
+
+The normalized data shows some association beteen Slide and the PCs (in PC6). Overall I think it is not really necessary to run this correction but 
+it could be quantified by random permuatation. This way I could quantify how often a significant association is detected.  
+After ComBat this association is completely removed over all dimensions.  
+
+When comparing the ComBat and normalized plots the corrected data shows weaker separation between the groups. This would be an argument that correction 
+actually is actually obscuring links between the samples. This can happen because the Slide and epigenetic groups will not be fully independent.  
+
+Therfore I will perform all future analyses on the normalized data without batch correction. This means that I will need to check for the enrichment of 
+batches in the new data. This could be compared to the amount of association seen in the batch corrected data.  
+
+
+
+
+Using single cell data objects for analysis?
+
+One class classifier for outlier prediction?
+
+PCA / UMAP  
+	
+	Use of M values over beta values (likely have better properties for PCA and UMAP)
+	
+	DMPs +/- ComBat  
+	MostVar +/- ComBat
+
+	which data to use (ideally MostVar for better generalizability)
+	
+Clustering  
+
+	DBSCAN on PCA / UMAP
+	graph based clustering 
+	Affinity propagation 
+
+	Separation of biological markers 
+	Overlap with consensus clustering (silhouette scores, kBET)
+
+	Iterative clustering as used by Comitani 2023
+
+
+Redefining ground truth:  
+
+	Hierarchical clustering seems to be not optimal for classification (many misclassifications in PCA)
+
+	Should the new G1G2 samples be added directly to the ground truth algorithm?
+		The best way will be to define the ground truth algorithm using only the 155 samples 
+		When it is extended by the G1G2 samples, unstable candidates can be identified and reviewed  
+
+155 samples 
+
+	All probes? (DMPs may be overfit but clearly delineate the alpha vs beta pheotype)
+	feature selection 
+	PCA / non-linear embedding 
+		bootstrapping of embedding
+			Silhouette scores of original embedding as measure? See single cell integration benchmarks
+	DBSCAN / graph based clustering
+			Repeat silhouette analysis on the bootstraps used before - show improvement over consensus clustering
+		Intersection of poorly clustered samples and instable samples in classification / consensus clustering
+		manual review of edge cases (unclassified cases for DBSCAN)
+		manual review of discrepancies between CC and new clustering  
+			
+New samples:  
+
+	Projection into PCA space / non-linear embedding
+	clustering (including old samples?)
+	manual review of altered classes 
+			Bootstrapping analysis?
+			
+Do all this before RF training to have a fixed ground truth and validation cohort
+
+In Capper the FFPE / frozen difference is also regressed out on new data (how is this done? - check GitHub)
+
+
+
+
+
+
+
+
+Next: 	Describing uncertainty in the consensus clustering 
+	Bayes error rate to calculate classification boundary (or other measures to quantify the maximal classification accuracy) - measure of uncertainty in consensus clustering  
+		Calibration of RF scores for easier interpretation  
+		using PCA to deal with correlated features (can be tuned)
+		Maybe use the whole data set for PCA based analysis (faster than decorrelation)
+		Other kinds of feature selection on the whole data (random forest importance?)
+		Project the new data into the PCA space of the old to estimate how similar they are (does the test data fit the training data?)
+		Prediction of new data (also include the data from Simona?)
+		Training alternative models (what are other good models? - elastic net, SVM, regression)
+		Correlation of the prediction with other biological featues (as a kind of verification)
+
+
+How about applying the machine learning workflow on the MGMT training data? Could this identify more informative probes / better cutoffs?
+	Ideally I would use PanNET specific data but it may also be possible to do this on the existing data (likely not an easy sell because the other classfier is already established)
+
+
+

@@ -1,0 +1,1254 @@
+---
+title: "230323 PanNET classifier ground truth"
+date: "__`r lubridate::today()`__"
+output: 
+  html_document:
+    number_sections: true
+    code_folding: hide
+    toc: true
+    toc_depth: 1
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+
+library(tidyverse)
+library(tidymodels)
+library(themis)
+library(factoextra)
+library(ConsensusClusterPlus)
+library(BiocSingular)
+library(scran)
+library(scater)
+library(bluster)
+library(ggrepel)
+library(pheatmap)
+library(kableExtra)
+library(openxlsx)
+library(UpSetR)
+library(ggbeeswarm)
+
+metaDataDir = "/Bioinformatics/projects/shared_metadata"
+dataDir = "/Bioinformatics/raw_data/IDAT/R_data_objects"
+```
+
+# Aim  
+
+In `230301_PanNET_classifier_tidymodels` some disagreement between the communities from consensus clustering and the PCA embeddings were observed.  
+
+Here alternative ways of constructing the ground truth are investigated. Additionally, the uncertainty of the consensus clustering is evaluated to highlight hard to classify samples.  
+
+# Loading data  
+
+The 155 PanNET samples used to define the epigenetic groups are loaded as described in the `030_NETG1G2_EPIC` script `220609_NETG1G2_EPIC_consensus_clustering_plus_metastases`.  
+
+```{r loading sample sheet}
+# The old samples are identified by the NDD (Nunzia DiDomenico) prefix
+
+# In the default ChAMP pipeline loading the data is done via minfi::read.metharry.sheet
+# The sample sheet is part of the shared meta data 
+NDD_sampleSheet = read_delim(file.path(metaDataDir, 
+                                       "PanNET_methylation", 
+                                       "221004_PanNET_methylation_sample_sheet_full.txt"),
+                             delim = "\t",
+                             show_col_types = F,
+                             col_types = list(Slide = col_character()))
+# for all experiments Nunzia was loading all Chan samples and later discarded the metastasis samples
+# This is done here too because this has a small effect on the number of probes being imported
+NDD_sampleSheet = NDD_sampleSheet %>% 
+  filter(NDD_paper_Chan_157 | NDD_final_155)
+
+# The column Basename is used by minfi to specify the data location
+# The data location can be matched using the combination of Slide and Array
+NDD_sampleSheet$Sample_UID = paste0(NDD_sampleSheet$Slide, "_", NDD_sampleSheet$Array)
+
+# For the samples of 2022 I included a step to filter not processed data 
+# this is not done for the old NDD data because the sample sheets contain no such case
+```
+
+```{r adding meta data}
+# This is clinical and experimental data 
+# This information is stored in the shared meta data 
+NDD_annotation = read_delim(file.path(metaDataDir, 
+                                      "PanNET_methylation",
+                                      "221004_PanNET_methylation_annotation_DiDomenico_full.txt"),
+                            delim = "\t", 
+                            #col_types = list(Grade = col_character()),
+                            show_col_types = F) 
+
+NDD_sampleAndAnnotation = left_join(NDD_sampleSheet,
+                                    NDD_annotation %>% 
+                                      dplyr::select(c(Sample_Name, MEN1, DAXX_ATRX, Grade, 
+                                                      Group3_signature, CC_Epi_newLRO, 
+                                                      ConsClus_k4_UB_UCL_ICGC, ConsClus_k4_UB_UCL_ICGC_Chan,
+                                                      Cell_type_groups = `Cell-type.groups`, CNAGroups,
+                                                      MCT4_max, MCT4, Group3_signature)),
+                                    by = "Sample_Name",
+                                    suffix = c(".old", "")) %>% 
+  dplyr::select(-ends_with(".old")) %>% 
+  mutate(MCT4_max = tolower(MCT4_max)) # this should be fixed in the meta data table
+```
+
+```{r NDD metaData}
+# meta data excluding the metastasis samples in Chan 
+NDD_metaData = NDD_sampleAndAnnotation %>% 
+  filter(!(Sample_Name %in%
+             c("A_MK12","AM1_MK53","D_MK26","D_MK34","D_MK42","D_MK51","DM1_LS7","DM1_MK44","WT_LS35"))) %>% 
+  mutate(Sample_Group = gsub("WT", "wt", Sample_Group)) 
+```
+
+```{r normalizing data}
+if (!exists("NDD_norm")){
+  data.file = "030_220201_NETG1G2_EPIC_consensus_clustering_DiDomenico_norm.Rds"
+  
+  if (file.exists(file.path(dataDir, 
+                            data.file))){
+    message("using saved normalized data")
+    NDD_norm = readRDS(file.path(dataDir, 
+                                 data.file))
+  } else{
+    warning("A file with the existing normalized data is required")
+  } 
+} else
+  message("using normalized data from current environment")
+
+# Check if loaded and processed data agree
+stopifnot(all.equal(NDD_metaData$Sample_Name, colnames(NDD_norm)))
+```
+
+<!-- The ComBat corrected data is not used because of the potential for data leakage in cross evaluation -->
+
+```{r NDD combat batch correction}
+# This is the batch correction for the 155 samples used by Nunzia
+# It is included here to be able to show the consensus clustering before addition of the new samples
+# NDD did use Combat to correct for Slide effects 
+# The protected effect is the DAXX_ATRX status (wt vs mut)
+if (!exists("NDD_ComBat")){
+  data.file = "030_220201_NETG1G2_EPIC_consensus_clustering_DiDomenico_ComBat.Rds"
+  useSavedData = T
+  if (file.exists(file.path(dataDir, 
+                            data.file))){
+    message("using saved ComBat data")
+    NDD_ComBat = readRDS(file.path(dataDir, 
+                                   data.file))
+  } else{
+    warning("A file with the existing ComBat data is required")
+  } 
+} else
+  message("using ComBat data from current environment")
+
+stopifnot(all.equal(NDD_metaData$Sample_Name, colnames(NDD_ComBat)))
+```
+
+```{r differentially methylated probes}
+# The consensus clustering is done on the differentially methylated probes 
+# These probes are derived by testing the groups from the phylogenetic tree 
+NDD_DMPs = list(alpha_v_beta = 
+                  read.xlsx(file.path(metaDataDir,
+                                      "PanNET_methylation/published_tables",
+                                      "DiDomenico_2020_T6_alpha_like_v_beta_like.xlsx"), 
+                            startRow = 2),
+                alpha_v_intermediate = 
+                  read.xlsx(file.path(metaDataDir,
+                                      "PanNET_methylation/published_tables",
+                                      "DiDomenico_2020_T7_alpha_like_v_intermediate.xlsx"),
+                            startRow = 2),
+                intermediate_v_beta = 
+                  read.xlsx(file.path(metaDataDir,
+                                      "PanNET_methylation/published_tables",
+                                      "DiDomenico_2020_T8_intermediate_v_beta_like.xlsx"),
+                            startRow = 2))
+NDD_DMPs_unique = unique(unlist(sapply(NDD_DMPs, function(x) x[[1]])))
+
+```
+
+# Consensus clustering confidence  
+
+The result of consensus clustering is a matrix with a range 0f $[0;1]$. Higher values indicate that two samples are frequently found in the same cluster with 1 indicating a perfect match.  
+
+Large values outside of the cluster of interest indicate increased likelihood of a sample to associate with samples from other clusters. This can be useful to measure the uncertainty of cluster assignment in consensus clustering.    
+
+```{r loading consensus clutering }
+# The consensus clustering result matching Nunzias data was done as part of 030_NETG1G2_EPIC
+NDD_ccDMP = readRDS("/Bioinformatics/projects/030_NETG1G2_EPIC/processed_data/220609_NDD.consClust_DMP.Rds")
+```
+
+## Consensus clustering heatmap  
+
+Consensus clustering was performed for 5 final clusters. 
+
+Evaluating the optimal number of clusters is complex and may require estimating a null model (see [Senbabaoglou, 2014](https://doi.org/10.1038/srep06207) and [John, 2020](https://doi.org/10.1038/s41598-020-58766-1))
+
+```{r NDD_DMP heatmap 8 clusters, fig.height = 9, fig.width = 10}
+plotCCheatmap = function(ccObject, 
+                         metaData, 
+                         previousCC = NULL, 
+                         colorList){
+  ccHmap = ccObject$consensusMatrix
+  ccDist = ccObject$consensusTree
+  ccDist_rev = ccDist
+  ccDist_rev$order = rev(ccDist_rev$order)
+  
+  attr(ccHmap, "dimnames") = list(names(ccObject$consensusClass),
+                                  names(ccObject$consensusClass))
+  
+  metaData = as.data.frame(metaData)
+  if(all.equal(rownames(metaData), as.character(seq_len(nrow(metaData)))))
+    rownames(metaData) = metaData$Sample_Name
+  metaData = metaData %>% 
+    dplyr::select(-Sample_Name) 
+  
+  if(!is.null(previousCC)){
+    metaData$new_sample = ifelse(is.na(metaData[[previousCC]]), "yes", "no")
+    colorList$new_sample = c(yes = "blue", no = "white")
+  }
+  
+  metaData[is.na(metaData)] = "missing"
+  
+  pheatmap(ccHmap,
+           scale = "none",
+           color = colorRampPalette(c("white", "blue"))(100),
+           cluster_rows = ccDist_rev,
+           cluster_cols = ccDist,
+           show_rownames = F,
+           show_colnames = F,
+           cellheight = 2,
+           cellwidth = 2,
+           annotation_col = metaData,
+           annotation_colors = colorList)
+}
+
+plotCCheatmap(NDD_ccDMP[[5]], 
+              NDD_metaData %>% 
+                dplyr::select(Sample_Name, 
+                              CC_Epi_newLRO, 
+                              Group3_signature, 
+                              MCT4_max, 
+                              DAXX_ATRX, 
+                              MEN1),
+              colorList = list(Grade = c(G1 = "khaki", G2 = "blue2", G3 = "blue4"),
+                               DAXX_ATRX = c(wt = "khaki", mut = "goldenrod3", missing = "white"),
+                               MEN1 = c(wt = "khaki", mut = "goldenrod3", missing = "white"),
+                               MCT4_max = setNames(
+                                 c(RColorBrewer::brewer.pal(n = 9, name = "YlOrRd")[c(3,6,9)], "white"),
+                                 nm = c("negative", "het", "positive", "missing")),
+                               Group3_signature = setNames(
+                                 c(RColorBrewer::brewer.pal(n = 9, name = "YlOrRd")[c(4,8)], "white"),
+                                 nm = c("Group1_2", "Group3", "missing")),
+                               CC_Epi_newLRO = c(Alpha_like = "dodgerblue4",
+                                                 Beta_like = "sienna3",
+                                                 Intermediate_ADM = "lightskyblue1",
+                                                 Intermediate_ADM_WT = "hotpink3",
+                                                 Intermediate_WT = "darksalmon",
+                                                 missing = "white"),
+                               Sample_Type = c(primary = "dodgerblue", metastasis = "blue")))
+```
+
+<!-- Alternative measures of optimal K for consensus clustering were proposed. The PAC score measures how flat the cummulative sum of consensus scores is. this can be extended by monte carlo simulation of null data sets.   -->
+
+```{r calculate PAC, eval = F}
+# the PAC measure was suggested by Senbabaglou 2014 as an alternative to find the optimal number of clusters
+# An extension using a bootstrapped null distribution was suggested in John 2018
+getPAC = function(cc_result,
+                  n_bins = 100,
+                  pac_interval = c(0.1, 0.9)){
+  n_clust = sapply(cc_result, function(x){
+    tryCatch(length(unique(x$consensusClass)),
+             error = function(e){
+               return(NA)
+             })
+  })
+  
+  pac_df = data.frame(index = seq_along(cc_result),
+                      n_clust = n_clust,
+                      PAC = NA)
+  
+  # Selecting PAC interval
+  hist_breaks = seq(0, 1, by = 1/n_bins)
+  pac_interval = floor(pac_interval * n_bins)
+  
+  for (i in pac_df$index){
+    if(!is.na(pac_df$n_clust[i])){
+      ccTri = ConsensusClusterPlus:::triangle(cc_result[[i]]$ml)
+      ccHist = hist(ccTri, plot = FALSE, breaks = hist_breaks)
+      ccHist$cumsum = cumsum(ccHist$counts) / sum(ccHist$counts)
+      
+      pac_df$PAC[i] = diff(ccHist$cumsum[pac_interval])
+    }
+  }
+  return(pac_df)
+}
+
+NDD_ccDMP_PAC = getPAC(NDD_ccDMP)
+
+# The PAC curve shows no local minimum
+# Something like the monte carlo approach from M3C may be helpful for finding the best K
+NDD_ccDMP_PAC %>% 
+  filter(!is.na(n_clust)) %>% 
+  ggplot(aes(x = n_clust, 
+             y = PAC)) + 
+  geom_line()
+```
+
+## Entropy  
+
+Entropy measures how variable a distribution is. This can be applied to the consensus scores per sample. A low entropy indicates that the consensus values of a sample are limited to few values. This is the expected case for well clustered samples (all scores are close to 1). For less clearly defined clusters there are more different consensus values and as a result higher entropy. 
+
+Originally entropy is only defined for discrete variables. Here the entropy is computed by binning the continuous consensus score into 100 bins. There are more advanced techniques that calculate continuous entropy using integration or interpolation. In the future it may be best to replace the coarse binning approach with some of these techniques.  
+
+```{r calculate entropy, fig.height = 5, fig.width = 10}
+entropy  =  function(target) {
+  freq  =  table(target)/length(target)
+  # vectorize
+  vec  =  as.data.frame(freq)[,2]
+  #drop 0 to avoid NaN resulting from log2
+  vec = vec[vec>0]
+  #compute entropy
+  -sum(vec * log2(vec))
+}
+
+NDD_ccDMP_entropy = data.frame(Sample_Name = names(NDD_ccDMP[[5]]$consensusClass),
+                               CC_Epi_newLRO = NDD_metaData$CC_Epi_newLRO,
+                               entropy = sapply(seq_len(nrow(NDD_ccDMP[[5]]$ml)), function(x){
+                                 entropy(cut(NDD_ccDMP[[5]]$ml[x, ], breaks = 100, labels = F))
+                               }))
+
+NDD_ccDMP_entropy %>% 
+  group_by(CC_Epi_newLRO) %>% 
+  mutate(n = n()) %>% 
+  ungroup() %>% 
+  ggplot(aes(x = entropy,
+             y = CC_Epi_newLRO,
+             fill = CC_Epi_newLRO)) + 
+  ggridges::geom_density_ridges(bandwidth = 0.1) +
+  geom_vline(xintercept = quantile(NDD_ccDMP_entropy$entropy, 0.8),
+             linetype = "dashed") +
+  theme_classic() + 
+  theme(axis.title.y = element_blank())
+```
+
+* Based on entropy the samples from Alpha- and Beta-like clusters have the lowest variability in consensus scores
+* Both Alpha- and Beta-like groups have several outliers
+* The entropy of the Intermediate groups generally is higher  
+* The vertical line indicates the 80th percentile (accuracy limit of the random forest classifier)
+
+Overall the distribution of entropy matches well with the visual impression of the consensus matrix.  
+
+As an example, the consensus matrix for the cluster of Alpha-like cells is visualized ordered in ascending order of entropy.  
+
+```{r example heatmap, fig.height = 4, fig.width = 10}
+plotHmapEntropy = function(cc_result, 
+                           cc_entropy,
+                           subgroup = "Alpha_like"){
+  
+  cc_hmap = cc_result$ml
+  rownames(cc_hmap) = cc_entropy$Sample_Name
+  
+  cc_entropy = cc_entropy %>% 
+    arrange(entropy) %>% 
+    filter(CC_Epi_newLRO %in% subgroup)
+  
+  cc_anno = data.frame(entropy = cc_entropy$entropy, 
+                       row.names = cc_entropy$Sample_Name)
+  
+  pheatmap(cc_hmap[cc_entropy$Sample_Name, ], 
+           cluster_rows = F, 
+           show_colnames = F,
+           cluster_cols = cc_result$consensusTree,
+           color = colorRampPalette(c("white", "blue"))(100),
+           annotation_row = cc_anno,
+           main = subgroup,
+           fontsize = 8)
+}
+
+plotHmapEntropy(NDD_ccDMP[[5]],
+                NDD_ccDMP_entropy)
+```
+
+* With increasing entropy the uncertainty of consensus clustering increases 
+
+## Mean consensus clustering scores
+
+Alternatively, the consensus matrix can be summarized as the mean similarity scores within and without of the final cluster assignment. 
+
+### Per cluster average
+
+This gives an easy overview over the direction of misclassification.  
+
+```{r mean consensus per cluster, fig.height = 3, fig.width = 10}
+getClusterScores = function(sample_index,
+                            by_cluster = T){
+  cc_scores = NDD_ccDMP[[5]]$ml[sample_index, -sample_index]
+  cc_groups = NDD_metaData$CC_Epi_newLRO[-sample_index]
+  
+  if (!by_cluster){
+    cc_groups = ifelse(cc_groups == NDD_metaData$CC_Epi_newLRO[sample_index],
+                       "within_cluster", 
+                       "without_cluster")
+  }
+  
+  score_means = rowsum(cc_scores, group = cc_groups) / as.vector(table(cc_groups)) 
+  
+  data.frame(class = rownames(score_means),
+             mean = score_means[, 1],
+             index = sample_index, 
+             row.names = NULL)
+}
+
+clusterHmap = bind_rows(lapply(seq_len(155), getClusterScores)) %>% 
+  pivot_wider(names_from = class, 
+              values_from = mean) %>% 
+  as.data.frame()
+rownames(clusterHmap) = NDD_metaData$Sample_Name
+
+
+pheatmap(t(clusterHmap[, -1]), 
+         cluster_rows = T, 
+         scale = "column",
+         show_colnames = F)
+```
+
+* The largest extent of uncertainty is between the Intermediate groups as expected
+
+# PCA 
+
+In the PCA projection based on the DMPs from Di Domenico 2020 the issues with consensus clustering were observed initially.
+
+```{r get PCA}
+# Data used for training the classifier
+NDD_TD = readRDS("processed_data/230301_NDD_TD.Rds")
+
+# For better organization, the methylation data is saved in a SingleCellExperiment object
+# ComBat corrected data (that is the basis of the consensus clustering)
+NDD_DMP_cb = SingleCellExperiment(assays = list(beta = NDD_ComBat[intersect(NDD_DMPs_unique, 
+                                                                            rownames(NDD_ComBat)), ]),
+                                  colData = NDD_metaData)
+NDD_DMP_cb = fixedPCA(NDD_DMP_cb, 
+                      assay.type = "beta", 
+                      subset.row = NULL,
+                      BSPARAM = ExactParam())
+
+# Normalized data (as used for training of the random forest)
+NDD_DMP_norm = SingleCellExperiment(assays = list(beta = NDD_norm[intersect(NDD_DMPs_unique, 
+                                                                            rownames(NDD_norm)), ]),
+                                    colData = NDD_metaData)
+NDD_DMP_norm = fixedPCA(NDD_DMP_norm, 
+                        assay.type = "beta", 
+                        subset.row = NULL,
+                        BSPARAM = ExactParam())
+```
+
+## Normalized vs ComBat corrected  
+
+The consensus clustering was performed after ComBat correction of the `Slide` variable while the random forest is trained using the normalized data only. This was done because ComBat correction in the cross validation fold frequently would result in levels without replicates. Orphan samples will be normalized to the overall mean expression value potentially introducing artifacts.   
+
+When predicting unknown samples it also is not possible to apply batch correction because each sample is considered individually.  
+
+In Capper 2018 batch correction was performed between frozen and FFPE specimen. In this case new samples can be corrected because they belong to the groups present in the training data. For correction the coefficients of the linear model are extracted and applied to unknown data points.  
+
+```{r pca ComBat vs norm, fig.height = 3.25, fig.width = 10}
+plotSCEreduction = function(sc_object,
+                            meta_data,
+                            color_name,
+                            color_label = NULL,
+                            plot_title = NULL,
+                            show_reduction = "PCA",
+                            show_center = F,
+                            use_Epi_colors = F){
+  plot_data = as.data.frame(reducedDim(sc_object, show_reduction))
+  color_vector = meta_data[[color_name]]
+  if (is.numeric(color_vector)) 
+    color_vector = as.character(color_vector)
+  
+  if (show_reduction == "PCA")
+    dim_name = "PC"
+  else
+    dim_name = show_reduction
+  
+  colnames(plot_data) = paste0(dim_name, seq_len(ncol(plot_data)))
+  
+  pca_plot = ggplot(plot_data, 
+                    aes(x = .data[[paste0(dim_name,"1")]], 
+                        y = .data[[paste0(dim_name,"2")]],
+                        color = color_vector)) + 
+    geom_point(size = 1.5) + 
+    theme_classic() + 
+    labs(color = color_label%||%color_name,
+         title = plot_title)
+  
+  if (show_center)
+    pca_plot = pca_plot + 
+    geom_point(aes(color = NULL), 
+               data = as.data.frame(t(colMeans(plot_data))),
+               color = "red",
+               size = 3)
+  
+  if (use_Epi_colors)
+    pca_plot = pca_plot + 
+    scale_color_manual(values = c(Alpha_like = "dodgerblue4",
+                                  Beta_like = "sienna3",
+                                  Intermediate_ADM = "lightskyblue1",
+                                  Intermediate_ADM_WT = "hotpink3",
+                                  Intermediate_WT = "darksalmon"))
+  else
+    pca_plot = pca_plot + 
+    scale_color_brewer(palette = "Set1", 
+                       na.value = "grey80")
+  
+  pca_plot
+}
+
+cowplot::plot_grid(
+  plotSCEreduction(NDD_DMP_cb, 
+                   NDD_metaData, 
+                   "CC_Epi_newLRO",
+                   color_label = "epigenetic groups",
+                   plot_title = "ComBat corrected beta values",
+                   use_Epi_colors = T),
+  plotSCEreduction(NDD_DMP_norm, 
+                   NDD_metaData,
+                   "CC_Epi_newLRO",
+                   color_label = "epigenetic groups",
+                   plot_title = "normalized beta values",
+                   use_Epi_colors = T)
+)
+```
+
+* The ComBat corrected data shows a more homogenous distribution of samples  
+* This makes it harder to discriminate between some groups
+
+### Association of Slide with PC dims
+
+To test how much the Slide variable is associated with the principal components, `kruskal-wallis` p values are calculated for each PC. The dashed line indicates a p value of 0.05, the dotted line the bonferroni corrected p value cutoff.  
+
+```{r Slide association, fig.height = 3.25, fig.width = 10}
+comparePCassoc = function(sc_object_a, 
+                          name_a = "a",
+                          sc_object_b,
+                          name_b = "b",
+                          assoc_variable){
+  pca_a = reducedDim(sc_object_a, "PCA")
+  pca_b = reducedDim(sc_object_b, "PCA")
+  n_dims = min(ncol(pca_a), ncol(pca_b))
+  
+  results = as.list(rep(NA, n_dims))
+  for (i in seq_len(n_dims)){
+    results[[i]] = bind_rows(kruskal.test(pca_a[,i], assoc_variable) %>% 
+                               tidy() %>% 
+                               mutate(data_set = name_a),
+                             kruskal.test(pca_b[,i], assoc_variable) %>% 
+                               tidy() %>% 
+                               mutate(data_set = name_b)) %>%
+      mutate(PC = i)
+  }
+  
+  bind_rows(results)
+}
+
+comparePCassoc(NDD_DMP_cb,
+               "ComBat", 
+               NDD_DMP_norm,
+               "normalized",
+               NDD_metaData$Slide) %>% 
+  ggplot(aes(x = PC,
+             y = -log10(p.value),
+             fill = data_set)) +
+  geom_bar(stat = "identity",
+           position = "dodge") + 
+  geom_hline(aes(yintercept = 2)) + 
+  geom_hline(aes(yintercept = -log10(0.05)),
+             linetype = "dashed") +
+  geom_hline(aes(yintercept = -log10(0.05 / max(.data[["PC"]]))),
+             linetype = "dotted") +
+  theme_classic()
+```
+
+* In the normalized data the PC6 is clearly associated with the Slide variable
+* As expected, in the ComBat corrected data the association is completely corrected
+
+### Relevant PC dimensions
+
+```{r scree plots, fig.height = 3, fig.width = 6}
+data.frame(percent_var = c(attr(reducedDim(NDD_DMP_cb, "PCA"), "percentVar"),
+                           attr(reducedDim(NDD_DMP_norm, "PCA"), "percentVar")),
+           pc = rep(factor(seq_len(50), levels = seq_len(50))), times = 2,
+           data = rep(c("ComBat", "normalized"), each = 50)) %>% 
+  filter(as.integer(pc) <= 20) %>% 
+  ggplot(aes(x = pc,
+             y = percent_var,
+             color = data)) + 
+  geom_point(size = 2,
+             position = position_dodge(width = 0.5)) + 
+  scale_color_brewer(palette = "Set1") + 
+  theme_classic() + 
+  labs(x = "principal components",
+       y = "percent explained variance")
+```
+
+* In both data sets adding more than 10 principal components is not necessary 
+* A large part of the variance is already captured by 5 dimensions
+
+### Probability of finding associations  
+
+In the normalized data, two pcs are found to be associated with the Slide variable with a p value < 0.05. To estimate if this is number is more than expected by chance a null distribution is approximated by 500 random permutations of the Slide variable, keeping the observed ratios. Only the first 10 PCs are tested because the others will be less relevant.  
+
+```{r permutated null, eval = F}
+getPCassoc = function(sc_object,
+                      assoc_variable,
+                      max_dims = NULL){
+  pca_dims = reducedDim(sc_object, "PCA")
+  n_dims = max_dims %||% ncol(pca_dims)
+  
+  results = as.list(rep(NA, n_dims))
+  for (i in seq_len(n_dims)){
+    results[[i]] = kruskal.test(pca_dims[,i], assoc_variable) %>% 
+      tidy() 
+  }
+  bind_rows(results)
+}
+
+bootstrapPCassoc = function(sc_object, 
+                            assoc_variable,
+                            n_iter = 100,
+                            ...){
+  boot_res = as.list(rep(NA, n_iter))
+  for (i in seq_along(boot_res)){
+    new_var = sample(assoc_variable, 
+                     length(assoc_variable))
+    boot_res[[i]] = getPCassoc(sc_object, 
+                               new_var,
+                               ...) %>% 
+      mutate(iter = i)
+  }
+  bind_rows(boot_res)
+}
+
+set.seed(2702)
+NDD_DMP_norm_null = bootstrapPCassoc(NDD_DMP_norm, 
+                                     NDD_metaData$Slide, 
+                                     n_iter = 500,
+                                     max_dims = 10)
+
+attr(NDD_DMP_norm_null, "estimated_freq") = NDD_DMP_norm_null %>% 
+  group_by(iter) %>% 
+  mutate(n = n(),
+         bonferroni = p.value * n) %>%  
+  summarize(n = dplyr::first(n),
+            p_sig = sum(p.value < 0.05),
+            b_sig = sum(bonferroni < 0.05)) %>% 
+  mutate(p_sig = p_sig / n,
+         b_sig = b_sig / n) %>% 
+  summarize(p_sig = mean(p_sig), 
+            b_sig = mean(b_sig))
+
+```
+
+The estimated frequencies for association with p value < 0.05 is `r attr(NDD_DMP_norm_null, "estimated_freq")[[1]]`. When using an Bonferroni adjusted p value < 0.05 the frequency is `r attr(NDD_DMP_norm_null, "estimated_freq")[[2]]`. 
+
+Based on these estimated frequencies the p value for 2 significant PCs (uncorrected p values) is: $`r gsub("e(-*[0-9]*)", "\\\\times10^{\\1}", format(binom.test(2, 10, attr(NDD_DMP_norm_null, "estimated_freq")[[1]])[["p.value"]], scientific = T, digits = 2))`$. When considering the Bonferroni corrected p values the p value for 1 significant PC is: $`r gsub("e(-*[0-9]*)", "\\\\times10^{\\1}", format(binom.test(2, 10, attr(NDD_DMP_norm_null, "estimated_freq")[[2]])[["p.value"]], scientific = T, digits = 2))`$.
+
+This shows that more PCs are associated with the Slide variable than expected by chance. 
+
+__However, due to the problems with a Slide based batch correction in the later steps it would be best to identify clusters without this step. The resulting data needs to be checked for a link between the Slide variable and the assigned group to exclude technical artifacts during clustering.__  
+
+## Known biological variables
+
+Known biological variables are visualized in the PCA of the normalized values.  
+
+```{r pca of old samples, fig.height = 9, fig.width = 10}
+cowplot::plot_grid(
+  plotSCEreduction(NDD_DMP_norm, 
+                   NDD_metaData, 
+                   "CC_Epi_newLRO",
+                   color_label = "epigenetic groups",
+                   use_Epi_colors = T),
+  plotSCEreduction(NDD_DMP_norm, 
+                   NDD_metaData, 
+                   "DAXX_ATRX"),
+  plotSCEreduction(NDD_DMP_norm, 
+                   NDD_metaData, 
+                   "MEN1"),
+  plotSCEreduction(NDD_DMP_norm, 
+                   NDD_metaData, 
+                   "MCT4_max"),
+  plotSCEreduction(NDD_DMP_norm, 
+                   NDD_metaData, 
+                   "Group3_signature"),
+  plotSCEreduction(NDD_DMP_norm, 
+                   NDD_metaData, 
+                   "CNAGroups"),
+  ncol = 2, 
+  align = "v"
+)
+```
+
+* The normalized data shows grouping of samples by biological variables 
+* This further confirms that the differences between cases are not driven by technical variables  
+
+## Entropy of the alpha-like cluster
+
+To visualize uncertainty of assignment, the entropy is used. Bot the PCAs from ComBat corrected and normalized data are shown.    
+
+```{r pca by entropy, fig.height = 15, fig.width = 9}
+stopifnot(all.equal(NDD_TD$Sample_Name, 
+                    NDD_ccDMP_entropy$Sample_Name))
+
+cowplot::plot_grid(
+  bind_cols(reducedDim(NDD_DMP_cb, "PCA") %>% 
+              as.data.frame(), 
+            NDD_ccDMP_entropy) %>% 
+    mutate(high_entropy = entropy > quantile(entropy, 0.8),
+           high_entropy_label = ifelse(high_entropy, Sample_Name, "")) %>% 
+    ggplot(aes(x = PC1, 
+               y = PC2,
+               color = entropy)) + 
+    geom_point(aes(color = NULLNULL), 
+               data = as.data.frame(t(colMeans(reducedDim(NDD_DMP_cb, "PCA")))),
+               color = "red",
+               size = 3) +
+    geom_point(size = 2) + 
+    geom_text_repel(aes(label = high_entropy_label),
+                    max.overlaps = 50,
+                    size = 3,
+                    color = "black", 
+                    min.segment.length = 0) +
+    scale_color_viridis_c() + 
+    theme_classic() + 
+    facet_wrap(~ CC_Epi_newLRO, 
+               ncol = 1) + 
+    labs(title = "ComBat corrected data"),
+  bind_cols(reducedDim(NDD_DMP_norm, "PCA") %>% 
+              as.data.frame(), 
+            NDD_ccDMP_entropy) %>% 
+    mutate(high_entropy = entropy > quantile(entropy, 0.8),
+           high_entropy_label = ifelse(high_entropy, Sample_Name, "")) %>% 
+    ggplot(aes(x = PC1, 
+               y = PC2,
+               color = entropy)) + 
+    geom_point(aes(color = NULLNULL), 
+               data = as.data.frame(t(colMeans(reducedDim(NDD_DMP_cb, "PCA")))),
+               color = "red",
+               size = 3) +
+    geom_point(size = 2) + 
+    geom_text_repel(aes(label = high_entropy_label),
+                    max.overlaps = 50,
+                    size = 3,
+                    color = "black", 
+                    min.segment.length = 0) +
+    scale_color_viridis_c() + 
+    theme_classic() + 
+    facet_wrap(~ CC_Epi_newLRO, 
+               ncol = 1) +
+    labs(title = "normalized data"),
+  ncol = 2
+)
+
+```
+
+* The most unclear Alpha-like sample in the ComBat corrected data aP318 is clearly grouped with other Alpha-like cells in the normalized data
+* Otherwise the location of the outliers is similar for both data sets  
+
+The sample aP318 is located on Slide `204411500084`. The location of the samples from this slide is visualized separately.  
+
+```{r ComBat example, fig.height = 3, fig.width = 9}
+cowplot::plot_grid(
+  bind_cols(reducedDim(NDD_DMP_cb, "PCA") %>% 
+              as.data.frame(), 
+            NDD_metaData) %>% 
+    mutate(Slide_204411500084 = Slide == "204411500084",
+           Slide_label = ifelse(Slide == "204411500084",
+                                Sample_Name, "")) %>% 
+    ggplot(aes(x = PC1, 
+               y = PC2, 
+               color = Slide_204411500084)) + 
+    geom_point() + 
+    geom_text_repel(aes(label = Slide_label),
+                    color = "black",
+                    max.overlaps = 50) + 
+    scale_color_manual(values = c("grey70", "blue")) + 
+    theme_classic() + 
+    labs(title = "ComBat corrected data"),
+  bind_cols(reducedDim(NDD_DMP_norm, "PCA") %>% 
+              as.data.frame(), 
+            NDD_metaData) %>% 
+    mutate(Slide_204411500084 = Slide == "204411500084",
+           Slide_label = ifelse(Slide == "204411500084",
+                                Sample_Name, "")) %>% 
+    ggplot(aes(x = PC1, 
+               y = PC2, 
+               color = Slide_204411500084)) + 
+    geom_point() + 
+    geom_text_repel(aes(label = Slide_label),
+                    color = "black",
+                    max.overlaps = 50) + 
+    scale_color_manual(values = c("grey70", "blue")) + 
+    theme_classic() + 
+    labs(title = "normalized data")
+)
+
+```
+
+* This example clearly visualizes how ComBat shifts samples towards the middle  
+* In case of the Slide `204411500084` samples are concentrated in one region of the PCA plot  
+
+In the normalized data 2 out of 3 samples will be classified as Alpha-like. Due to the low number of samples from this slide it is impossible to discriminate between a technical effect or enrichment simply by chance.  
+
+## UMAP
+
+```{r run umap }
+set.seed(1914)
+NDD_DMP_cb = runUMAP(NDD_DMP_cb,
+                     dimred = "PCA",
+                     n_dimred = 15, 
+                     n_neighbors = 30,
+                     min_dist = 0.2)
+
+set.seed(1914)
+NDD_DMP_norm = runUMAP(NDD_DMP_norm,
+                       dimred = "PCA",
+                       n_dimred = 15, 
+                       n_neighbors = 30,
+                       min_dist = 0.4)
+```
+
+```{r umap ComBat vs norm, fig.height = 3.25, fig.width = 10}
+cowplot::plot_grid(
+  plotSCEreduction(NDD_DMP_cb, 
+                   NDD_metaData, 
+                   "CC_Epi_newLRO",
+                   color_label = "epigenetic groups",
+                   plot_title = "ComBat corrected beta values",
+                   show_reduction = "UMAP",
+                   use_Epi_colors = T),
+  plotSCEreduction(NDD_DMP_norm, 
+                   NDD_metaData,
+                   "CC_Epi_newLRO",
+                   color_label = "epigenetic groups",
+                   show_reduction = "UMAP",
+                   plot_title = "normalized beta values",
+                   use_Epi_colors = T)
+)
+```
+
+
+```{r umap of old samples, fig.height = 9, fig.width = 10, eval = F}
+cowplot::plot_grid(
+  ggplot(as.data.frame(NDD_TD_umap), 
+         aes(x = UMAP1, 
+             y = UMAP2,
+             color = NDD_TD$CC_Epi_newLRO)) + 
+    geom_point(size = 1.5) + 
+    scale_color_manual(values = c(Alpha_like = "dodgerblue4",
+                                  Beta_like = "sienna3",
+                                  Intermediate_ADM = "lightskyblue1",
+                                  Intermediate_ADM_WT = "hotpink3",
+                                  Intermediate_WT = "darksalmon")) +
+    theme_classic() + 
+    labs(color = "Epigenetic groups"),
+  ggplot(as.data.frame(NDD_TD_umap), 
+         aes(x = UMAP1, 
+             y = UMAP2,
+             color = NDD_metaData$DAXX_ATRX)) + 
+    geom_point(size = 1.5) +
+    theme_classic() + 
+    labs(color = "DAXX ATRX"),
+  ggplot(as.data.frame(NDD_TD_umap), 
+         aes(x = UMAP1, 
+             y = UMAP2,
+             color = NDD_metaData$MEN1)) + 
+    geom_point(size = 1.5) +
+    theme_classic() + 
+    labs(color = "MEN1"),
+  ggplot(as.data.frame(NDD_TD_umap), 
+         aes(x = UMAP1, 
+             y = UMAP2,
+             color = NDD_metaData$MCT4_max)) + 
+    geom_point(size = 1.5) +
+    theme_classic() + 
+    labs(color = "MCT4 max"),
+  ggplot(as.data.frame(NDD_TD_umap), 
+         aes(x = UMAP1, 
+             y = UMAP2,
+             color = NDD_metaData$Group3_signature)) + 
+    geom_point(size = 1.5) +
+    theme_classic() + 
+    labs(color = "Group3 signature"),
+  ggplot(as.data.frame(NDD_TD_umap), 
+         aes(x = UMAP1, 
+             y = UMAP2,
+             color = NDD_metaData$CNAGroups)) + 
+    geom_point(size = 1.5) +
+    theme_classic() + 
+    labs(color = "CNA groups"),
+  ncol = 2, 
+  align = "v"
+)
+```
+
+## Including entropy
+
+```{r umap by entropy, fig.height = 12, fig.width = 10, eval = F}
+stopifnot(all.equal(NDD_TD$Sample_Name, 
+                    NDD_ccDMP_entropy$Sample_Name))
+
+
+bind_cols(as.data.frame(NDD_TD_umap), 
+          NDD_ccDMP_entropy) %>% 
+  mutate(high_entropy = entropy > quantile(entropy, 0.8),
+         high_entropy_label = ifelse(high_entropy, Sample_Name, "")) %>% 
+  ggplot(aes(x = UMAP1, 
+             y = UMAP2,
+             color = entropy)) + 
+  geom_point(size = 2) + 
+  geom_text_repel(aes(label = high_entropy_label),
+                  max.overlaps = 20,
+                  size = 4,
+                  color = "black", 
+                  min.segment.length = 0) +
+  scale_color_viridis_c() + 
+  theme_classic() + 
+  facet_wrap(~ CC_Epi_newLRO, 
+             ncol = 2)
+```
+
+# Random forest predictions  
+
+```{r run random forest, eval = F}
+if (!exists("NDD_recipes")){
+  NDD_recipes = list(
+    DMP_all = NDD_TD %>% 
+      recipe(CC_Epi_newLRO ~ .) %>% 
+      update_role(Sample_Name, new_role = "UID") %>% 
+      step_upsample(CC_Epi_newLRO,
+                    over_ratio = 1,
+                    seed = 1631) %>% 
+      prep(),
+    DMP_decor = NDD_TD %>% 
+      recipe(CC_Epi_newLRO ~ .) %>% 
+      update_role(Sample_Name, new_role = "UID") %>% 
+      step_upsample(CC_Epi_newLRO,
+                    over_ratio = 1,
+                    seed = 1631) %>% 
+      step_corr(all_predictors(), 
+                threshold = 0.8) %>% 
+      prep()
+  )
+}
+
+set.seed(1618)
+NDD_TDouterFolds = vfold_cv(NDD_TD,
+                            v = 4, 
+                            repeats = 5, 
+                            strata = CC_Epi_newLRO)
+
+ranger_model = rand_forest(mode = "classification",
+                           trees = tune(),
+                           mtry = tune()) %>% 
+  set_engine("ranger")
+
+ranger_grid = grid_regular(trees(c(100, 1300)),
+                           mtry(c(50, 200)),
+                           levels = 7,
+                           filter = mtry < 101)
+```
+
+```{r fit tuned cross validation, eval = F}
+# In addition to the model predictions the probe importance is saved 
+# Despite the correlation this may help identify probes of interest
+getProbeEstimates <- function(x) {
+  x %>% 
+    extract_fit_parsnip() %>% 
+    vip::vi()
+}
+
+if (!exists("DMP_all_ranger_cv")){
+  DMP_all_ranger_cv = 
+    workflow() %>% 
+    add_model(set_engine(ranger_model,
+                         "ranger", 
+                         importance = "impurity")) %>% 
+    add_recipe(NDD_recipes$DMP_all) %>% 
+    finalize_workflow(ranger_grid[10, ]) %>% 
+    fit_resamples(NDD_TDouterFolds,
+                  control = control_resamples(save_pred = T,
+                                              extract = getProbeEstimates))
+}
+```
+
+```{r eval = F}
+NDD_ranger_predictions = collect_predictions(DMP_all_ranger_cv,
+                                             summarize = F) %>% 
+  filter(id == "Repeat1") %>% 
+  dplyr::select(Sample_Name = .row, 
+                CC_Epi_newLRO, 
+                .pred_class) %>% 
+  mutate(Sample_Name = plyr::mapvalues(Sample_Name, 
+                                       from = seq_len(nrow(NDD_TD)),
+                                       to = NDD_TD$Sample_Name))
+NDD_ranger_predictions = NDD_ranger_predictions[match(NDD_TD$Sample_Name,
+                                                      NDD_ranger_predictions$Sample_Name), ]
+
+
+```
+
+
+```{r umap of old samples plus prediction, fig.height = 3, fig.width = 10, eval = F}
+cowplot::plot_grid(
+  ggplot(as.data.frame(NDD_TD_umap), 
+         aes(x = UMAP1, 
+             y = UMAP2,
+             color = NDD_TD$CC_Epi_newLRO)) + 
+    geom_point(size = 1.5) + 
+    scale_color_manual(values = c(Alpha_like = "dodgerblue4",
+                                  Beta_like = "sienna3",
+                                  Intermediate_ADM = "lightskyblue1",
+                                  Intermediate_ADM_WT = "hotpink3",
+                                  Intermediate_WT = "darksalmon")) +
+    theme_classic() + 
+    labs(color = "Epigenetic groups"),
+  ggplot(as.data.frame(NDD_TD_umap), 
+         aes(x = UMAP1, 
+             y = UMAP2,
+             color = NDD_ranger_predictions$.pred_class)) + 
+    geom_point(size = 1.5) + 
+    scale_color_manual(values = c(Alpha_like = "dodgerblue4",
+                                  Beta_like = "sienna3",
+                                  Intermediate_ADM = "lightskyblue1",
+                                  Intermediate_ADM_WT = "hotpink3",
+                                  Intermediate_WT = "darksalmon")) +
+    theme_classic() + 
+    labs(color = "Epigenetic groups"))
+```
+
+
+
+
+```{r eval = F}
+
+
+
+
+colData(test)$knn_clusters = clusterCells(test,
+                                          use.dimred = "PCA",
+                                          BLUSPARAM=SNNGraphParam(k=5, 
+                                                                  type="jaccard", 
+                                                                  cluster.fun="louvain"))
+
+colData(test)$kmeans_clusters = clusterCells(test,
+                                             use.dimred = "PCA",
+                                             BLUSPARAM=KmeansParam(centers = 5))
+
+colData(test)$h_clusters = clusterCells(test,
+                                        use.dimred = "PCA", 
+                                        BLUSPARAM= HclustParam(method = "ward.D2", 
+                                                               cut.params = list(k = 5)))
+
+colData(test)$affinity_clusters = clusterCells(test,
+                                               use.dimred = "PCA", 
+                                               BLUSPARAM= AffinityParam())
+
+colData(test)$dbscan_clusters = clusterCells(test,
+                                             use.dimred = "UMAP", 
+                                             BLUSPARAM= DbscanParam(core.prop = 0.75))
+
+colData(test)$som_clusters = clusterCells(test,
+                                          use.dimred = "UMAP", 
+                                          BLUSPARAM= SomParam(centers = 6))
+
+plotReducedDim(test, "UMAP", colour_by= "som_clusters")
+```
+
+
+
+
+
+
+* Double negative vs double positive?
+* How do the RF predictions look in the UMAP?
+
+# Next  
+
+PCA / UMAP on top n probes (how to select them?)
+The DMPs favor separation of Alpha_ and Beta_like but likely not discriminate the Intermediate cases
+
+# Redefining ground truth:  
+
+Hierarchical clustering seems to be not optimal for classification (many misclassifications in PCA)
+
+Should the new G1G2 samples be added directly to the ground truth algorithm?
+The best way will be to define the ground truth algorithm using only the 155 samples 
+When it is extended by the G1G2 samples, unstable candidates can be identified and reviewed  
+
+# 155 samples 
+
+All probes? (DMPs may be overfit but clearly delineate the alpha vs beta pheotype)
+feature selection 
+PCA / non-linear embedding 
+bootstrapping of embedding
+Silhouette scores of original embedding as measure? See single cell integration benchmarks
+DBSCAN / graph based clustering
+Based on the DMP umap DBSCAN may be problematic
+Repeat silhouette analysis on the bootstraps used before - show improvement over consensus clustering
+Intersection of poorly clustered samples and unstable samples in classification / consensus clustering
+manual review of edge cases (unclassified cases for DBSCAN)
+manual review of discrepancies between CC and new clustering  
+
+# New samples:  
+
+Projection into PCA space / non-linear embedding
+clustering (including old samples?)
+manual review of altered classes 
+Bootstrapping analysis?
+
+Do all this before RF training to have a fixed ground truth and validation cohort
+
+
+```{r session info}
+sessionInfo()
+```
+
+------
+
+visualization of potential problems with batch correction:  
+
+```{r ComBat issues, fig.height = 4, fig.width = 9}
+ComBat_example = function(){
+  # Adding a random batch variable to a set of methylation samples
+  meta_data = NDD_metaData %>% 
+    dplyr::slice(1:30) %>% 
+    mutate(test_batch = sample(letters[1:2], 30, replace = T))
+  
+  norm_data = NDD_norm[, meta_data$Sample_Name]
+  norm_sce = SingleCellExperiment(assays = list(beta = norm_data),
+                                  colData = meta_data)
+  norm_sce = fixedPCA(norm_sce, 
+                      rank = 2,
+                      assay.type = "beta", 
+                      subset.row = NULL,
+                      BSPARAM = ExactParam())
+  
+  # Adding the largest outlier in PC1 as a separate batch
+  meta_data$test_batch[reducedDim(norm_sce)[,1] == max(reducedDim(norm_sce)[,1])] = "c"
+  colLabels(norm_sce) = meta_data$test_batch
+  
+  cb_data = sva::ComBat(norm_data, batch = meta_data$test_batch)
+  
+  cb_sce = SingleCellExperiment(assays = list(beta = cb_data),
+                                colData = meta_data)
+  cb_sce = fixedPCA(cb_sce, 
+                    rank = 2,
+                    assay.type = "beta", 
+                    subset.row = NULL,
+                    BSPARAM = ExactParam())
+  colLabels(cb_sce) = meta_data$test_batch
+  
+  cowplot::plot_grid(
+    plotReducedDim(norm_sce, dimred = "PCA", color_by = "label"),
+    plotReducedDim(cb_sce, dimred = "PCA", color_by = "label")
+  )
+}
+
+ComBat_example()
+```
+
+<!-- In principle entropy could be interesting to evaluate the certainty of clustering. However, it seems to be heavily influenced by cluster size. It is not used but may be helpful when optimized.   -->
+
+<!-- Actually just using the entropy gave quite good results.  -->
+
+```{r calculating entropy, eval = F}
+# the code is taken from https://rstudio-pubs-static.s3.amazonaws.com/455435_30729e265f7a4d049400d03a18e218db.html
+entropy  =  function(target) {
+  freq  =  table(target)/length(target)
+  # vectorize
+  vec  =  as.data.frame(freq)[,2]
+  #drop 0 to avoid NaN resulting from log2
+  vec = vec[vec>0]
+  #compute entropy
+  -sum(vec * log2(vec))
+}
+
+IG_numeric = function(data, 
+                      feature, 
+                      target, 
+                      bins = 4){
+  #Strip out rows where feature is NA
+  data = data[!is.na(data[[feature]]),]
+  #compute entropy for the parent
+  e0 = entropy(data[[target]])
+  
+  data$cat = cut(data[,feature], breaks=bins, labels=c(1:bins))
+  
+  #use dplyr to compute e and p for each value of the feature
+  dd_data  =  data %>% group_by(cat) %>% summarise(e=entropy(get(target)), 
+                                                   n=length(get(target)),
+                                                   min=min(get(feature)),
+                                                   max=max(get(feature))
+  )
+  
+  #calculate p for each value of feature
+  dd_data$p = dd_data$n/nrow(data)
+  #compute IG
+  IG = e0-sum(dd_data$p*dd_data$e)
+  
+  return(IG)
+}
+
+IG_generic = function(data, 
+                      feature, 
+                      target){
+  #Strip out rows where feature is NA
+  data = data[!is.na(data[,feature]),]
+  #compute entropy for the parent
+  e0 = entropy(data[[target]])
+  
+  #use dplyr to compute e and p for each value of the feature
+  dd_data  =  data %>% group_by(data[[feature]]) %>% summarise(e=entropy(get(target)), 
+                                                               n=length(get(target)),
+                                                               min=min(get(feature)),
+                                                               max=max(get(feature))
+  )
+  
+  #calculate p for each value of feature
+  dd_data$p = dd_data$n/nrow(data)
+  #compute IG
+  IG = e0-sum(dd_data$p*dd_data$e)
+  
+  return(IG)
+}
+
+
+IG_generic(NDD_metaData, feature = "CC_Epi_newLRO", target = "CC_Epi_newLRO")
+
+ig_df = sapply(seq_len(50), function(x){
+  cc_df = data.frame(CC_Epi_newLRO = NDD_metaData$CC_Epi_newLRO, 
+                     PC = reducedDim(NDD_DMP_cb)[,x])
+  
+  IG_numeric(cc_df, feature = "PC", target = "CC_Epi_newLRO", bins = 100)
+})
+
+
+ig_df = sapply(seq_len(155), function(x){
+  cc_df = data.frame(CC_Epi_newLRO = NDD_metaData$CC_Epi_newLRO, 
+                     cc_value = NDD_ccDMP[[5]]$ml[x, ])
+  
+  IG_numeric(cc_df, feature = "cc_value", target = "CC_Epi_newLRO", bins = 100)
+})
+
+ig_df = data.frame(ig = ig_df, 
+                   CC_Epi_newLRO = NDD_metaData$CC_Epi_newLRO,
+                   index = 1:155) %>% 
+  arrange(ig)
+
+cowplot::plot_grid(
+  ggplot(ig_df, 
+         aes(x = ig, 
+             fill = CC_Epi_newLRO)) + 
+    geom_histogram(binwidth = 0.1, 
+                   center = 0.05,
+                   position = "dodge")
+)
+```
+
+
+
+
