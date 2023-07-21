@@ -8,13 +8,29 @@ Tu:	Bern_2023 - mapped STAR - counted Subread - GRCh38
 	Scarpa_2017 (projects\046_RNASeq_count_data_collection) - mapped STAR - counted RSEM - GRCh37
 	Chan_2018 (projects\046_RNASeq_count_data_collection) - mapped STAR - counted RSEM - GRCh37
 	Alvarez_2018 (projects\006_Tumoroids_Viper\raw_data\Alvarez_viper\GSE98894) - mapped Bowtie - counted GenomicFeatures - (Hg19) GRCh37  (select pancreas primary)
+		match ENSEMBL IDs with ENTREZ IDs (either via AnnotationDbi (org.Hs.eg.db) or table projects\shared_data\human_GRCh38_ensembl104_entrez.txt.gz - plyr::mapvalues (after removing duplicate Ensembl and Entrez Ids)
 	
 	Join data sets 
 	check for batch effect (between sample groups)
 	
 We: Correct batch
+	sva::ComBat
+	
 	Score hypoxia signatures
+	The scoring function can be found in `projects\044_Cell_lines_hypoxia\221107_Cell_lines_hypoxia_RNASeq.Rmd`
+	
+	Scarpa group 3 (scarpa_group_3_signature_corrected.csv)
+	ADM3 signature (20210305_Genes_Corr_Progressive_Intersection.csv)
+		ADM3 = ADM3 %>% 
+			filter(NumberOfProbesSameCat > 1)
+	
+	library(viridisLite) - https://sjmgarnier.github.io/viridisLite/
+	scale_color_viridis_c()
 	
 Th:	Compare scores with published results
 
 Fr:	Strategy for 2nd half of the project
+
+
+
+inner_join(a, b, suffix = c("", "_from_b")) %>% dplyr::select(!ends_width("from_b"))
