@@ -1,0 +1,22 @@
+Sample_Name,Subject,Tissue_Type,Data_Set,EpigeneticGroups_DiDomenico,CNAGroups_DiDomenico,EpigeneticGroups_AdditionalSamples,RNAseq_Scarpa,Group3_signature_re-classification,MEN1,DAXX_ATRX,ALT,Grade,T.stage,N.Stage,M.Stage,Length.of.Follow-Up.(mths),DFS.(mths),Alpha_Lineage_Groups_RNAseq,Alpha_Lineage_Groups_DNAme,Age,Gender,Familial.syndrome,Hormone.syndrome
+ICGC_0425,Subject_30,PrimaryPanNET,ICGC,Alpha_like,Group1,Alpha_like,1,Group1_2,mut,wt,Negative,G1,3,0,0,73.78,no relapse,Alpha_like,Alpha_like,69,M,No,NF
+ICGC_0427,Subject_31,PrimaryPanNET,ICGC,Intermediate_ADM,Group1,Intermediate_ADM,3,Group3,wt,wt,NA,G2,3,0,0,59.28,no relapse,NA,ADM1-2,48,M,No,VIPoma
+ICGC_0428,Subject_32,PrimaryPanNET,ICGC,Intermediate_ADM,Group3,Intermediate_ADM,2,Group1_2,mut,wt,NA,G2,3,0,0,3.35,NA,ADM1-2,ADM1-2,74,M,No,NF
+ICGC_0432,Subject_33,PrimaryPanNET,ICGC,Intermediate_ADM,Group3,Intermediate_ADM,3,Group3,mut,mut,Positive,G1,4,1,0,19.73,NA,ADM3,ADM3,76,M,No,NF
+ICGC_0434,Subject_34,PrimaryPanNET,ICGC,Intermediate_WT,Group1,Intermediate_ADM_WT,2,Group1_2,wt,wt,Negative,G1,4,0,0,0.82,NA,NA,NA,59,M,No,PPoma
+ICGC_0435,Subject_35,PrimaryPanNET,ICGC,Intermediate_ADM,NA,Intermediate_ADM_WT,3,Group3,mut,wt,Positive,G2,4,1,0,20.22,no relapse,NA,NA,66,M,No,NF
+ICGC_0436,Subject_36,PrimaryPanNET,ICGC,Intermediate_ADM,Group2,Intermediate_ADM,3,Group3,wt,mut,Negative,G1,4,1,0,38.89,15.233333333333333,ADM3,ADM3,61,M,No,NF
+ICGC_0437,Subject_37,PrimaryPanNET,ICGC,Intermediate_ADM,Group2,Intermediate_ADM,2,Group1_2,wt,mut,Positive,G2,2,NA,0,37.51,no relapse,ADM1-2,ADM1-2,67,F,No,Insulinoma
+ICGC_0438,Subject_38,PrimaryPanNET,ICGC,Intermediate_ADM,Group1,Intermediate_ADM,2,Group1_2,mut,mut,Positive,G1,4,1,1,33.9,15,ADM1-2,ADM1-2,79,M,No,NF
+ICGC_0440,Subject_40,PrimaryPanNET,ICGC,Beta_like,Group1,Beta_like,1,Group1_2,wt,wt,Negative,G1,2,0,0,32.19,no relapse,NA,NA,65,F,No,Insulinoma
+ICGC_0441,Subject_41,PrimaryPanNET,ICGC,Intermediate_WT,Group1,Intermediate_ADM,3,Group3,wt,wt,Negative,G2,3,0,0,33.67,no relapse,NA,ADM1-2,69,F,No,NF
+ICGC_0443,Subject_42,PrimaryPanNET,ICGC,Intermediate_ADM,Group1,Intermediate_ADM,3,Group1_2,mut,wt,Negative,G1,3,0,0,24.79,no relapse,NA,ADM1-2,59,F,No,NF
+ICGC_0447,Subject_44,PrimaryPanNET,ICGC,Alpha_like,Group1,Alpha_like,2,Group1_2,wt,wt,Negative,G1,1,0,0,26.96,no relapse,Alpha_like,Alpha_like,44,F,Yes,NF
+ICGC_0452,Subject_45,PrimaryPanNET,ICGC,Intermediate_ADM,NA,Intermediate_ADM_WT,2,Group1_2,wt,mut,Positive,G2,4,0,0,20.55,no relapse,NA,NA,77,M,No,NF
+ICGC_0459,Subject_46,PrimaryPanNET,ICGC,Beta_like,Group1,Beta_like,1,Group1_2,wt,wt,Negative,G1,1,0,0,12.16,no relapse,NA,NA,56,M,No,Insulinoma
+ICGC_0491,Subject_47,PrimaryPanNET,ICGC,Alpha_like,Group1,Alpha_like,1,Group1_2,mut,wt,Negative,G1,1,0,0,15.85,29.366666666666667,NA,Alpha_like,64,M,No,NF
+ICGC_0492,Subject_48,PrimaryPanNET,ICGC,Alpha_like,Group2,Alpha_like,2,Group1_2,wt,wt,Negative,G2,3,1,0,9.040000000000001,no relapse,Alpha_like,Alpha_like,38,M,No,NF
+ICGC_0497,Subject_49,PrimaryPanNET,ICGC,Intermediate_ADM,Group3,Intermediate_ADM,3,Group3,mut,mut,Positive,G2,4,1,0,7.96,no relapse,NA,ADM1-2,71,M,No,NF
+ICGC_0498,Subject_50,PrimaryPanNET,ICGC,Intermediate_ADM,Group3,Intermediate_ADM,2,Group1_2,mut,mut,NA,G2,3,1,0,5.42,NA,ADM1-2,ADM1-2,59,F,No,NF
+ICGC_0500,Subject_51,PrimaryPanNET,ICGC,Alpha_like,Group1,Alpha_like,1,Group1_2,mut,wt,Negative,G1,1,0,0,2.01,no relapse,Alpha_like,Alpha_like,75,F,No,NF
+ICGC_0501,Subject_52,PrimaryPanNET,ICGC,Intermediate_ADM,Group2,Intermediate_ADM,3,Group3,mut,wt,Positive,G2,4,0,0,1.32,no relapse,ADM3,ADM3,64,M,No,NF

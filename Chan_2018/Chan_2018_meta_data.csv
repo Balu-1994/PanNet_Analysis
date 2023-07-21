@@ -1,0 +1,22 @@
+Sample_Name,Subject,Tissue_Type,Data_Set,EpigeneticGroups_DiDomenico,CNAGroups_DiDomenico,EpigeneticGroups_AdditionalSamples,RNAseq_Scarpa,Group3_signature_re-classification,MEN1,DAXX_ATRX,ALT,Grade,T.stage,N.Stage,M.Stage,Length.of.Follow-Up.(mths),DFS.(mths),Alpha_Lineage_Groups_RNAseq,Alpha_Lineage_Groups_DNAme,Age,Gender,Familial.syndrome,Hormone.syndrome
+A_MK11,Subject_1,PrimaryPanNET,Chan,Intermediate_WT,NA,Intermediate_ADM_WT,NA,Group3,wt,mut,NA,LG,NA,NA,NA,77.03013698630137,no relapse,NA,NA,40,M,NA,NF
+A_MK4,Subject_2,PrimaryPanNET,Chan,Intermediate_ADM,NA,Intermediate_ADM,NA,Group1_2,wt,mut,NA,LG,NA,NA,NA,109.67671232876714,no relapse,ADM1-2,ADM1-2,41,M,NA,Insulinoma
+A_MK47,Subject_3,PrimaryPanNET,Chan,Intermediate_ADM,NA,Intermediate_ADM,NA,Group3,wt,mut,NA,IM,NA,NA,NA,164.28493150684932,no relapse,ADM3,ADM3,71,F,NA,NF
+AM1_MK36,Subject_10,PrimaryPanNET,Chan,Intermediate_ADM,NA,Intermediate_ADM,NA,Group3,mut,mut,NA,LG,NA,NA,NA,103.13424657534246,101.52328767123288,ADM3,ADM1-2,66,M,NA,NF
+D_LS21,Subject_24,PrimaryPanNET,Chan,Intermediate_ADM,NA,Intermediate_ADM,NA,Group1_2,wt,mut,NA,IM,NA,NA,NA,93.9945205479452,22.323287671232876,ADM1-2,ADM1-2,34,M,NA,NF
+D_MK18,Subject_25,PrimaryPanNET,Chan,Intermediate_ADM,NA,Intermediate_ADM,NA,Group1_2,wt,mut,NA,IM (upd HG),NA,NA,NA,31.43013698630137,NA,ADM1-2,ADM1-2,44,M,NA,NF
+D_MK9,Subject_26,PrimaryPanNET,Chan,Intermediate_ADM,NA,Intermediate_ADM,NA,Group1_2,wt,mut,NA,LG,NA,NA,NA,113.72054794520548,no relapse,ADM1-2,ADM1-2,60,F,NA,NF
+DM1_MK17,Subject_27,PrimaryPanNET,Chan,Intermediate_ADM,NA,Intermediate_ADM,NA,Group3,mut,mut,NA,LG,NA,NA,NA,67.95616438356164,NA,ADM3,ADM3,44,F,NA,VIPoma
+DM1_MK45,Subject_28,PrimaryPanNET,Chan,Intermediate_ADM,NA,Intermediate_ADM,NA,Group1_2,mut,mut,NA,LG (upd IM),NA,NA,NA,135.84657534246577,no relapse,ADM1-2,ADM1-2,52,F,NA,NF
+DM1_MK52,Subject_29,PrimaryPanNET,Chan,Intermediate_ADM,NA,Intermediate_ADM,NA,Group1_2,mut,mut,NA,LG (upd IM),NA,NA,NA,89.55616438356165,NA,ADM1-2,ADM1-2,73,M,NA,NF
+M1_LS1,Subject_98,PrimaryPanNET,Chan,Intermediate_ADM,NA,Intermediate_ADM,NA,Group1_2,mut,wt,NA,IM,NA,NA,NA,40.33972602739726,19.56164383561644,ADM1-2,ADM1-2,70,M,NA,NFA
+WT_LS27,Subject_156,PrimaryPanNET,Chan,Intermediate_ADM,NA,Intermediate_ADM_WT,NA,Group1_2,wt,wt,NA,LG,NA,NA,NA,35.013698630136986,13.545205479452054,NA,NA,54,F,NA,NF
+WT_LS39,Subject_157,PrimaryPanNET,Chan,Intermediate_WT,NA,Intermediate_ADM_WT,NA,Group1_2,wt,wt,NA,LG,NA,NA,NA,92.74520547945205,15.583561643835615,NA,NA,42,M,NA,VIPoma
+WT_LS65,Subject_158,PrimaryPanNET,Chan,Beta_like,NA,Beta_like,NA,Group1_2,wt,wt,NA,LG,NA,NA,NA,136.04383561643837,no relapse,NA,NA,54,F,NA,NF
+WT_MK13,Subject_159,PrimaryPanNET,Chan,Intermediate_WT,NA,Intermediate_ADM_WT,NA,Group1_2,wt,wt,NA,IM,NA,NA,NA,35.96712328767123,NA,NA,NA,30,F,NA,NF
+WT_MK15,Subject_160,PrimaryPanNET,Chan,Intermediate_WT,NA,Intermediate_ADM_WT,NA,Group1_2,wt,wt,NA,LG,NA,NA,NA,62.92602739726027,no relapse,NA,NA,60,M,NA,NF
+WT_MK21,Subject_162,PrimaryPanNET,Chan,Intermediate_WT,NA,Intermediate_WT,NA,Group1_2,wt,wt,NA,LG (upd IM),NA,NA,NA,128.18630136986303,no relapse,NA,NA,60,F,NA,NF
+WT_MK39,Subject_164,PrimaryPanNET,Chan,Intermediate_WT,NA,Intermediate_WT,NA,Group1_2,wt,wt,NA,LG,NA,NA,NA,154.9808219178082,no relapse,NA,NA,44,M,NA,NF
+WT_MK49,Subject_165,PrimaryPanNET,Chan,Beta_like,NA,Beta_like,NA,Group1_2,wt,wt,NA,LG,NA,NA,NA,204.65753424657532,no relapse,NA,NA,55,F,NA,NF
+WT_MK50,Subject_166,PrimaryPanNET,Chan,Intermediate_ADM,NA,Intermediate_ADM_WT,NA,Group1_2,wt,wt,NA,LG,NA,NA,NA,58.75068493150685,no relapse,NA,NA,63,M,NA,NF
+WT_MK8,Subject_167,PrimaryPanNET,Chan,Beta_like,NA,Beta_like,NA,Group1_2,wt,wt,NA,LG,NA,NA,NA,15.64931506849315,no relapse,NA,NA,55,M,NA,Insulinoma
